@@ -38,7 +38,8 @@ from dlt.common.schema.utils import (
 from dlt_typesense.configuration import TypesenseClientConfiguration
 from dlt_typesense.load_jobs import TypesenseLoadJob
 from dlt_typesense.rest_client import TypesenseRestClient
-from dlt_typesense.type_mapper import collection_schema_auto
+from dlt_typesense.type_mapper import collection_schema_auto, collection_schema_from_table
+from dlt_typesense.typesense_adapter import COLLECTION_HINT, FIELD_HINT
 
 
 class TypesenseClient(JobClientBase, WithStateSync):
@@ -109,7 +110,10 @@ class TypesenseClient(JobClientBase, WithStateSync):
                 qualified_name,
                 [{"name": n(C_DLT_LOADS_TABLE_LOAD_ID), "type": "string", "optional": True}],
             )
-        return collection_schema_auto(qualified_name)
+        table = self.schema.tables.get(table_name)
+        if table is None:
+            return collection_schema_auto(qualified_name)
+        return collection_schema_from_table(qualified_name, table, n)
 
     @staticmethod
     def _hybrid_schema(qualified_name: str, pinned_fields: list[dict[str, Any]]) -> dict[str, Any]:
@@ -123,7 +127,22 @@ class TypesenseClient(JobClientBase, WithStateSync):
         qualified_name = self.make_qualified_collection_name(table_name)
         if not self._rest.collection_exists(qualified_name):
             self._rest.create_collection(self._collection_schema(qualified_name, table_name))
+        elif self._table_has_hints(table_name):
+            logger.info(
+                f"Collection '{qualified_name}' already exists; Typesense schema hints apply "
+                "only at collection creation and were not re-applied. Recreate the collection "
+                "(e.g. replace disposition or drop) to apply changed hints."
+            )
         return qualified_name
+
+    def _table_has_hints(self, table_name: str) -> bool:
+        table = self.schema.tables.get(table_name)
+        if not table:
+            return False
+        if table.get(COLLECTION_HINT):
+            return True
+        columns = table.get("columns") or {}
+        return any(FIELD_HINT in column for column in columns.values())
 
     def _recreate_collection(self, table_name: str) -> None:
         qualified_name = self.make_qualified_collection_name(table_name)

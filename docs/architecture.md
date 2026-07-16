@@ -39,10 +39,29 @@ configuration.py     → credentials + batch/timeout knobs
 typesense_client.py  → storage init, schema update, state sync, create_load_job
 load_jobs.py         → TypesenseLoadJob (RemoveOrphansJob stub raises)
 rest_client.py       → streaming HTTP import / collection CRUD
-type_mapper.py       → auto-schema collection create
-typesense_adapter.py → facet/sort/index hints (not wired)
+type_mapper.py       → collection schema build (typed pinned fields + `.*` auto)
+typesense_adapter.py → per-field + collection-level schema hints
 exceptions.py        → terminal vs transient import errors
 ```
+
+## Schema hints
+
+`typesense_adapter` stores hints in the dlt schema and returns the resource:
+
+- `x-typesense-field` (per column) — a dict of Typesense field params
+  (`type`, `facet`, `sort`, `locale`, `num_dim`, `embed`, …), attached via
+  `apply_hints(columns=...)` so it travels with the normalized column name.
+- `x-typesense-collection` (per table) — collection params
+  (`default_sorting_field`, `token_separators`, `symbols_to_index`,
+  `enable_nested_fields`, `metadata`), attached via `additional_table_hints`.
+
+`typesense_client._collection_schema` builds data-table schemas with
+`type_mapper.collection_schema_from_table`: hinted columns become pinned typed
+fields (dlt type → wire-format Typesense type unless a `type` hint overrides),
+followed by the `.*` auto catch-all. Hints apply at collection **create** time
+only (first load, `replace` recreates); there is no schema alter path.
+`load_jobs` skips JSON-stringification for `json` columns whose type override
+is non-string, so `float[]` vector fields arrive as native lists.
 
 ## Write dispositions
 

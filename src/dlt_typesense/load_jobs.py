@@ -17,6 +17,7 @@ from dlt_typesense.exceptions import (
     TypesenseImportError,
     TypesensePartialImportError,
 )
+from dlt_typesense.typesense_adapter import FIELD_HINT
 
 if TYPE_CHECKING:
     from dlt_typesense.typesense_client import TypesenseClient
@@ -129,8 +130,19 @@ class TypesenseLoadJob(RunnableLoadJob, HasFollowupJobs):
 
     @staticmethod
     def _json_fields(table: Any) -> list[str]:
+        """``json`` columns to stringify — except those pinned to a Typesense
+        type that expects the native JSON value (``float[]`` vectors must stay
+        lists, ``string[]`` must stay string arrays, ``object`` stays a dict)."""
         columns = table.get("columns") or {}
-        return [name for name, column in columns.items() if column.get("data_type") == "json"]
+        fields = []
+        for name, column in columns.items():
+            if column.get("data_type") != "json":
+                continue
+            override = (column.get(FIELD_HINT) or {}).get("type")
+            if override is not None and override != "string":
+                continue
+            fields.append(name)
+        return fields
 
     def _id_fields(self, table: Any) -> Sequence[str] | None:
         """Columns that key the Typesense ``id``, or ``None`` to use ``_dlt_id``."""

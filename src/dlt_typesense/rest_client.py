@@ -12,6 +12,7 @@ import json
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -211,14 +212,19 @@ class TypesenseRestClient:
         return resp.json()
 
     def get_document(self, collection_name: str, document_id: str) -> dict[str, Any] | None:
-        resp = self._request("GET", f"/collections/{collection_name}/documents/{document_id}")
+        # Quote the id: dlt `_dlt_id` values are base64 and may contain `/` or `+`.
+        resp = self._request(
+            "GET", f"/collections/{collection_name}/documents/{quote(document_id, safe='')}"
+        )
         if resp.status_code == 404:
             return None
         self._check_status(resp, "get document")
         return resp.json()
 
     def delete_document(self, collection_name: str, document_id: str) -> None:
-        resp = self._request("DELETE", f"/collections/{collection_name}/documents/{document_id}")
+        resp = self._request(
+            "DELETE", f"/collections/{collection_name}/documents/{quote(document_id, safe='')}"
+        )
         if resp.status_code == 404:
             return
         self._check_status(resp, "delete document")

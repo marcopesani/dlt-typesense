@@ -14,6 +14,10 @@ class TypesenseTransientError(DestinationTransientException):
     """Retryable Typesense failure (timeouts, 5xx, network)."""
 
 
+class TypesenseSchemaError(DestinationTerminalException):
+    """Invalid or unsatisfiable Typesense schema hints (retry cannot fix them)."""
+
+
 class TypesensePartialImportError(TypesenseImportError):
     """Some documents in an import batch failed permanently."""
 
