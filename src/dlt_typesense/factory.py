@@ -18,7 +18,7 @@ class typesense(Destination[TypesenseClientConfiguration, "TypesenseClient"]):
     """Typesense document destination for dlt.
 
     Collections map to tables; documents are loaded via JSONL bulk import.
-    Supports append, replace (truncate-and-insert), and merge (upsert).
+    Supports append, replace (truncate-and-insert), and merge (upsert, insert-only).
     """
 
     spec = TypesenseClientConfiguration  # type: ignore[assignment]
@@ -36,7 +36,8 @@ class typesense(Destination[TypesenseClientConfiguration, "TypesenseClient"]):
         caps.is_max_text_data_type_length_in_bytes = False
         caps.supports_ddl_transactions = False
         caps.supported_replace_strategies = ["truncate-and-insert"]
-        caps.supported_merge_strategies = ["upsert"]
+        # "upsert" must stay first: dlt resolves it as the default merge strategy
+        caps.supported_merge_strategies = ["upsert", "insert-only"]
         # Encourage file sharding for multi-million-row loads
         caps.recommended_file_size = 64_000_000
         return caps
