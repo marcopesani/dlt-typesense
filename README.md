@@ -1,7 +1,8 @@
 # dlt-typesense
 
 [![CI](https://github.com/marcopesani/dlt-typesense/actions/workflows/ci.yml/badge.svg)](https://github.com/marcopesani/dlt-typesense/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/dlt-typesense.svg)](https://pypi.org/project/dlt-typesense/)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://github.com/marcopesani/dlt-typesense/blob/main/LICENSE)
 
 **Typesense document destination for [dlt](https://dlthub.com)** — load data into Typesense collections with proper write dispositions (`append`, `replace`, `merge`/`upsert`), not as a blind reverse-ETL sink.
 
@@ -28,11 +29,21 @@ LanceDB): `JobClientBase` + JSONL load jobs + `WithStateSync` for incremental
 pipelines. Suitable for multi-million-row syncs via file sharding and parallel
 import jobs.
 
-See [docs/architecture.md](docs/architecture.md) for module seams and scale notes.
+See [docs/architecture.md](https://github.com/marcopesani/dlt-typesense/blob/main/docs/architecture.md) for module seams and scale notes.
 
 ## Install
 
-Requires [uv](https://docs.astral.sh/uv/).
+```bash
+pip install dlt-typesense
+```
+
+Or with [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv add dlt-typesense
+```
+
+For local development:
 
 ```bash
 git clone https://github.com/marcopesani/dlt-typesense.git
@@ -58,8 +69,8 @@ pipeline = dlt.pipeline(
 pipeline.run(products())
 ```
 
-Runnable examples are in [`examples/`](examples/). Start a local server with
-`docker compose up -d` first.
+Runnable examples are in [`examples/`](https://github.com/marcopesani/dlt-typesense/tree/main/examples).
+Start a local server with `docker compose up -d` first.
 
 ### Schema customization (`typesense_adapter`)
 
@@ -192,8 +203,8 @@ uv run pytest -m integration  # integration tests (fail, never skip, if unreacha
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). By contributing you agree to the [Developer Certificate of Origin](https://developercertificate.org/) (sign off commits with `Signed-off-by`).
+See [CONTRIBUTING.md](https://github.com/marcopesani/dlt-typesense/blob/main/CONTRIBUTING.md). By contributing you agree to the [Developer Certificate of Origin](https://developercertificate.org/) (sign off commits with `Signed-off-by`).
 
 ## License
 
-[Apache License 2.0](LICENSE)
+[Apache License 2.0](https://github.com/marcopesani/dlt-typesense/blob/main/LICENSE)

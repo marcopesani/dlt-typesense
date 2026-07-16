@@ -45,3 +45,8 @@ htmlcov/
 # Typesense local data
 typesense-data/
 *.qdrant
+
+# Local tooling / agent worktrees (never ship in sdists)
+.local/
+.claude/
+.smoke/

@@ -1,0 +1,70 @@
+name: Publish
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Check distributions
+        run: uvx twine check --strict dist/*
+
+      - name: Guard against sdist bloat
+        run: |
+          size="$(stat -c%s dist/*.tar.gz)"
+          echo "sdist size: $size bytes"
+          test "$size" -lt 1000000
+
+      - name: Verify release tag matches package version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' src/dlt_typesense/__init__.py)"
+          if [ "$tag" != "$version" ]; then
+            echo "Release tag '$GITHUB_REF_NAME' does not match package version '$version' (expected v$version)"
+            exit 1
+          fi
+
+      - name: Smoke-install wheel
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          uv venv .smoke
+          uv pip install --python .smoke dist/*.whl
+          .smoke/bin/python -c "from dlt_typesense import typesense, typesense_adapter, __version__; assert __version__ == '$tag', __version__"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+  publish:
+    name: publish
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/dlt-typesense
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
