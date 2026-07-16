@@ -18,7 +18,6 @@ class _FakeConfig:
 
 
 def test_create_action_is_rejected(tmp_path) -> None:
-    """Covers: AC-TS-07 — `create` breaks retry idempotency and is rejected."""
     from dlt_typesense.exceptions import TypesenseImportError
 
     file_path = tmp_path / "rows.abc.0.jsonl"
@@ -41,7 +40,6 @@ class _FakeRest:
         self.last_kwargs: dict = {}
 
     def import_documents(self, collection_name, documents, **kwargs) -> ImportSummary:
-        # drain the generator so streaming is exercised
         list(documents)
         self.calls.append(collection_name)
         self.last_kwargs = kwargs
@@ -55,7 +53,6 @@ class _FakeClient:
 
 
 def test_partial_import_error_is_diagnosable(tmp_path) -> None:
-    """Covers: AC-TS-03, AC-NF-02 — error names the collection, load id, first errors."""
     file_path = tmp_path / "rows.abc123.0.jsonl"
     file_path.write_text(json.dumps({"_dlt_id": "r1", "v": 1}) + "\n")
 
@@ -79,7 +76,6 @@ def test_partial_import_error_is_diagnosable(tmp_path) -> None:
 
 
 def test_config_server_batch_size_reaches_rest(tmp_path) -> None:
-    """Covers: AC-TS-09 — the configured server_batch_size flows job -> rest import."""
     file_path = tmp_path / "rows.abc.0.jsonl"
     file_path.write_text(json.dumps({"_dlt_id": "r1", "v": 1}) + "\n")
     config = _FakeConfig()

@@ -1,4 +1,4 @@
-"""The shipped examples run green end-to-end (AC-NF-05)."""
+"""The shipped examples run green end-to-end."""
 
 from __future__ import annotations
 
@@ -26,8 +26,6 @@ def _drop_dataset(credentials, dataset: str) -> None:
 
 
 def _run_example(name: str, env: dict, cwd: pathlib.Path) -> None:
-    # Run as a subprocess (as a user would) so dlt's resource reflection sees a
-    # real, importable module rather than a dynamically-loaded one.
     result = subprocess.run(
         [sys.executable, str(EXAMPLES_DIR / f"{name}.py")],
         env=env,
@@ -41,9 +39,6 @@ def _run_example(name: str, env: dict, cwd: pathlib.Path) -> None:
 
 
 def test_examples_run_green(require_server, tmp_path) -> None:
-    """Covers: AC-NF-05"""
-    # The examples call typesense() with no explicit credentials, so provide them
-    # via dlt config env vars (as a real user would through .dlt/secrets.toml).
     env = dict(os.environ)
     env.update(
         {

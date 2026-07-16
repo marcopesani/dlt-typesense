@@ -1,4 +1,4 @@
-"""Data-shape matrix across dispositions (AC-SHAPE-01..07)."""
+"""Data-shape matrix across dispositions."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ pytestmark = pytest.mark.integration
 
 
 def test_flat_scalar_rows_load_one_to_one(make_pipeline, documents) -> None:
-    """Covers: AC-SHAPE-01"""
     pipeline = make_pipeline()
 
     @dlt.resource(name="rows", write_disposition="append")
@@ -26,7 +25,6 @@ def test_flat_scalar_rows_load_one_to_one(make_pipeline, documents) -> None:
 
 @pytest.mark.parametrize("disposition", ["append", "replace", "merge"])
 def test_nested_dicts_flatten_to_parent_child(make_pipeline, documents, disposition) -> None:
-    """Covers: AC-SHAPE-02 — under append, replace, and merge-upsert."""
     pipeline = make_pipeline()
     resource_kwargs: dict[str, Any] = {"primary_key": "user_id"} if disposition == "merge" else {}
 
@@ -42,7 +40,6 @@ def test_nested_dicts_flatten_to_parent_child(make_pipeline, documents, disposit
 
 
 def test_nested_lists_become_child_collections(make_pipeline, documents) -> None:
-    """Covers: AC-SHAPE-03 — merge child rows carry linking keys incl. _dlt_root_id."""
     pipeline = make_pipeline()
 
     @dlt.resource(name="orders", write_disposition="merge", primary_key="order_id")
@@ -60,7 +57,6 @@ def test_nested_lists_become_child_collections(make_pipeline, documents) -> None
 
 
 def test_nested_lists_under_append(make_pipeline, documents) -> None:
-    """Covers: AC-SHAPE-03 — under append, child rows link by parent id (no root key)."""
     pipeline = make_pipeline()
 
     @dlt.resource(name="orders", write_disposition="append")
@@ -79,7 +75,6 @@ def test_nested_lists_under_append(make_pipeline, documents) -> None:
 
 
 def test_null_and_missing_values_are_optional(make_pipeline, documents, count_documents) -> None:
-    """Covers: AC-SHAPE-04"""
     pipeline = make_pipeline()
 
     @dlt.resource(name="rows", write_disposition="append")
@@ -97,7 +92,6 @@ def test_null_and_missing_values_are_optional(make_pipeline, documents, count_do
 
 @pytest.mark.parametrize("disposition", ["append", "merge"])
 def test_schema_evolution_variant_column(make_pipeline, documents, disposition) -> None:
-    """Covers: AC-SHAPE-05 — a type change routes the value to a stored variant column."""
     pipeline = make_pipeline()
     resource_kwargs: dict[str, Any] = {"primary_key": "rid"} if disposition == "merge" else {}
 
@@ -110,7 +104,6 @@ def test_schema_evolution_variant_column(make_pipeline, documents, disposition) 
     assert not info.has_failed_jobs
     columns = pipeline.default_schema.tables["rows"]["columns"]
     assert any(name.startswith("val__v_") for name in columns)
-    # Assert the STORED documents, not just the in-memory schema.
     docs = {d["rid"]: d for d in documents(make_pipeline.qualified_name(pipeline, "rows"))}
     assert len(docs) == 2
     assert docs[1]["val"] == 10 and "val__v_text" not in docs[1]
@@ -118,7 +111,6 @@ def test_schema_evolution_variant_column(make_pipeline, documents, disposition) 
 
 
 def test_zero_row_resources_do_not_fail(make_pipeline) -> None:
-    """Covers: AC-SHAPE-06 — append and merge tolerate empty resources."""
     pipeline = make_pipeline()
 
     @dlt.resource(name="empty_append", write_disposition="append")
@@ -136,7 +128,6 @@ def test_zero_row_resources_do_not_fail(make_pipeline) -> None:
 
 
 def test_unicode_and_special_characters_round_trip(make_pipeline, documents) -> None:
-    """Covers: AC-SHAPE-07"""
     pipeline = make_pipeline()
     tricky = 'héllo 😀 "quoted" \\ back \n newline \t tab 日本語'
     long_string = "x" * 20000

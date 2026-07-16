@@ -1,4 +1,4 @@
-"""Storage lifecycle protocol against a live Typesense (AC-PROTO-01..07)."""
+"""Storage lifecycle protocol against a live Typesense."""
 
 from __future__ import annotations
 
@@ -29,15 +29,12 @@ def _system_collections(client: TypesenseClient) -> list[str]:
 def test_initialize_storage_creates_system_collections_idempotently(
     make_pipeline, open_client
 ) -> None:
-    """Covers: AC-PROTO-01"""
     pipeline = make_pipeline()
     _establish_schema(pipeline)
     with open_client(pipeline) as client:
         client.initialize_storage()
         for collection in _system_collections(client):
             assert client.rest.collection_exists(collection)
-        # Write a sentinel into a system collection, then re-initialize: a destructive
-        # re-init would drop it, so its survival proves the "no data loss" clause.
         version_collection = client.make_qualified_collection_name(client.schema.version_table_name)
         client.rest.upsert_document(
             version_collection,
@@ -58,7 +55,6 @@ def test_initialize_storage_creates_system_collections_idempotently(
 
 
 def test_is_storage_initialized_transitions(make_pipeline, open_client) -> None:
-    """Covers: AC-PROTO-02"""
     pipeline = make_pipeline()
     _establish_schema(pipeline)
     with open_client(pipeline) as client:
@@ -70,7 +66,6 @@ def test_is_storage_initialized_transitions(make_pipeline, open_client) -> None:
 def test_truncate_tables_empties_only_listed(
     make_pipeline, open_client, probe, count_documents
 ) -> None:
-    """Covers: AC-PROTO-03"""
     pipeline = make_pipeline()
 
     @dlt.resource(name="a", write_disposition="append")
@@ -97,7 +92,6 @@ def test_truncate_tables_empties_only_listed(
 def test_drop_storage_removes_everything_and_allows_restart(
     make_pipeline, open_client, count_documents
 ) -> None:
-    """Covers: AC-PROTO-04"""
     pipeline = make_pipeline()
 
     @dlt.resource(name="items", write_disposition="append")
@@ -115,7 +109,6 @@ def test_drop_storage_removes_everything_and_allows_restart(
             assert not client.rest.collection_exists(system_collection)
         assert not client.rest.collection_exists(collection)
 
-    # A fresh run from scratch succeeds.
     info = pipeline.run(items())
     assert not info.has_failed_jobs
     assert count_documents(collection) == 4
@@ -124,7 +117,6 @@ def test_drop_storage_removes_everything_and_allows_restart(
 def test_update_stored_schema_creates_tables_and_noops_on_unchanged_hash(
     make_pipeline, open_client
 ) -> None:
-    """Covers: AC-PROTO-05, AC-STATE-01"""
     pipeline = make_pipeline()
     _establish_schema(pipeline, table="products")
     with open_client(pipeline) as client:
@@ -142,12 +134,10 @@ def test_update_stored_schema_creates_tables_and_noops_on_unchanged_hash(
         client.update_stored_schema()  # unchanged hash -> genuinely no write
         after_docs = client.rest.search_documents(version_collection, per_page=250)
         assert len(after_docs) == 1
-        # A no-op that silently re-upserted would refresh inserted_at; it must not.
         assert after_docs[0]["inserted_at"] == inserted_before
 
 
 def test_dataset_qualification_and_isolation(make_pipeline, open_client, count_documents) -> None:
-    """Covers: AC-PROTO-06"""
     pipeline_one = make_pipeline(dataset_name="catalog")
 
     @dlt.resource(name="products", write_disposition="append")
@@ -158,20 +148,17 @@ def test_dataset_qualification_and_isolation(make_pipeline, open_client, count_d
     assert make_pipeline.qualified_name(pipeline_one, "products") == "catalog_products"
     assert count_documents("catalog_products") == 1
 
-    # A second dataset on the same server is independent.
     pipeline_two = make_pipeline(dataset_name="warehouse")
     pipeline_two.run(products())
     assert count_documents("warehouse_products") == 1
 
     with open_client(pipeline_two) as client:
         client.drop_storage()
-    # Dropping warehouse leaves catalog untouched.
     assert count_documents("catalog_products") == 1
     assert count_documents("warehouse_products") == 0
 
 
 def test_complete_load_records_load_id(make_pipeline, open_client) -> None:
-    """Covers: AC-PROTO-07"""
     pipeline = make_pipeline()
 
     @dlt.resource(name="items", write_disposition="append")
@@ -185,7 +172,6 @@ def test_complete_load_records_load_id(make_pipeline, open_client) -> None:
         doc = client.rest.get_document(loads_collection, load_id)
         assert doc is not None
         n = client.schema.naming.normalize_identifier
-        # Verify the record content, not just existence.
         assert doc[n("load_id")] == load_id
         assert doc[n("status")] == 0  # completed
         assert doc[n("schema_name")] == client.schema.name

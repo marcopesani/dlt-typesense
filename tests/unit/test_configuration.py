@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 from dlt.common.configuration.exceptions import ConfigFieldMissingException
 from dlt.common.configuration.resolve import resolve_configuration
@@ -15,8 +17,7 @@ _CRED_SECTIONS = ("destination", "typesense")
 
 @pytest.fixture(autouse=True)
 def _clean_credential_env(monkeypatch):
-    """Ensure no ambient DESTINATION__TYPESENSE__* env leaks into resolution tests."""
-    for key in list(__import__("os").environ):
+    for key in list(os.environ):
         if key.startswith("DESTINATION__TYPESENSE__") or key.startswith("TYPESENSE_"):
             monkeypatch.delenv(key, raising=False)
 
@@ -30,7 +31,6 @@ def _configured() -> TypesenseClientConfiguration:
 
 
 def test_credentials_defaults() -> None:
-    """Covers: AC-CAP-06 — defaults host/port/protocol."""
     creds = TypesenseCredentials()
     assert creds.host == "localhost"
     assert creds.port == 8108
@@ -38,7 +38,6 @@ def test_credentials_defaults() -> None:
 
 
 def test_fingerprint_stable_and_key_independent() -> None:
-    """Covers: AC-CAP-07 — fingerprint stable per protocol/host/port, key-independent."""
     config_a = _configured()
     config_b = _configured()
     config_b.credentials.api_key = "a-totally-different-key"
@@ -47,11 +46,6 @@ def test_fingerprint_stable_and_key_independent() -> None:
 
 
 def test_fingerprint_discriminates_connection_tuple() -> None:
-    """Covers: AC-CAP-07 — distinct protocol/host/port yield distinct fingerprints.
-
-    Guards against a degenerate, location-insensitive fingerprint (which would let
-    state/schema from one server be reused against another undetected).
-    """
     base = _configured()
     for field, value in (("host", "other.example"), ("port", 1234), ("protocol", "http")):
         variant = _configured()
@@ -70,28 +64,19 @@ def test_fingerprint_discriminates_connection_tuple() -> None:
     ],
 )
 def test_api_key_never_leaks(rendered) -> None:
-    """Covers: AC-CAP-07, AC-NF-03 — the api_key value never appears in reprs/output."""
     config = _configured()
     assert _SECRET not in rendered(config)
 
 
 def test_physical_location_shows_connection_only() -> None:
-    """Covers: AC-CAP-07"""
     config = _configured()
     assert config.physical_location() == "https://h.example:7777"
     assert str(config) == "https://h.example:7777"
 
 
 def test_missing_api_key_makes_config_partial() -> None:
-    """Covers: AC-CAP-06 — a missing api_key is detected as unresolved (dlt raises).
-
-    ``api_key`` is a non-optional secret, so a ``None`` value leaves the
-    credentials partial; dlt surfaces this as ConfigFieldMissingException naming
-    the field before any load starts.
-    """
     creds = TypesenseCredentials()
     creds.host, creds.port, creds.protocol = "localhost", 8108, "http"
-    # api_key deliberately left as None
     assert creds.is_partial() is True
     resolvable = creds.get_resolvable_fields()
     assert "api_key" in resolvable
@@ -99,7 +84,6 @@ def test_missing_api_key_makes_config_partial() -> None:
 
 
 def test_present_api_key_resolves() -> None:
-    """Covers: AC-CAP-06"""
     creds = TypesenseCredentials()
     creds.host, creds.port, creds.protocol, creds.api_key = "localhost", 8108, "http", "k"
     resolvable = creds.get_resolvable_fields()
@@ -107,18 +91,16 @@ def test_present_api_key_resolves() -> None:
 
 
 def test_credentials_resolve_from_env_with_defaults(monkeypatch) -> None:
-    """Covers: AC-CAP-06 — real dlt config resolution from env, with defaults."""
     monkeypatch.setenv("DESTINATION__TYPESENSE__CREDENTIALS__API_KEY", "env-key")
     monkeypatch.setenv("DESTINATION__TYPESENSE__CREDENTIALS__HOST", "env-host")
     resolved = resolve_configuration(TypesenseCredentials(), sections=_CRED_SECTIONS)
     assert resolved.api_key == "env-key"
     assert resolved.host == "env-host"
-    assert resolved.port == 8108  # default
-    assert resolved.protocol == "http"  # default
+    assert resolved.port == 8108
+    assert resolved.protocol == "http"
 
 
 def test_missing_api_key_raises_naming_the_field() -> None:
-    """Covers: AC-CAP-06 — real resolution with no api_key raises, naming the field."""
     with pytest.raises(ConfigFieldMissingException) as excinfo:
         resolve_configuration(TypesenseCredentials(), sections=_CRED_SECTIONS)
     assert "api_key" in excinfo.value.fields
@@ -126,7 +108,6 @@ def test_missing_api_key_raises_naming_the_field() -> None:
 
 
 def test_unsupported_replace_strategy_rejected() -> None:
-    """Covers: AC-CAP-03 — a staging replace strategy fails, naming strategy + supported list."""
     for strategy in ("staging-optimized", "insert-from-staging"):
         config = _configured()
         config.replace_strategy = strategy  # type: ignore[attr-defined]
@@ -135,11 +116,10 @@ def test_unsupported_replace_strategy_rejected() -> None:
         message = str(excinfo.value)
         assert strategy in message
         assert "truncate-and-insert" in message
-    _configured().on_resolved()  # default truncate-and-insert is accepted
+    _configured().on_resolved()
 
 
 def test_create_import_action_rejected() -> None:
-    """Covers: AC-TS-07 — `create` is rejected at config resolution."""
     config = _configured()
     config.import_action = "create"
     with pytest.raises(DestinationCapabilitiesException):

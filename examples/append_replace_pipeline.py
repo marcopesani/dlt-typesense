@@ -41,9 +41,7 @@ def main() -> None:
         destination=typesense(),
         dataset_name="demo",
     )
-    # append: every run adds the rows again.
     print(pipeline.run(events()))
-    # replace: each run truncates and reloads, leaving only the latest snapshot.
     print(pipeline.run(snapshot()))
 
 

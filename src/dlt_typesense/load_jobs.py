@@ -21,18 +21,13 @@ from dlt_typesense.exceptions import (
 if TYPE_CHECKING:
     from dlt_typesense.typesense_client import TypesenseClient
 
-# Namespace for deterministic merge document ids (uuid5). Any fixed namespace works;
-# the value must never change or existing merge ids would stop matching.
+# Fixed uuid5 namespace — must never change or merge ids stop matching.
 _ID_NAMESPACE = uuid.NAMESPACE_DNS
 
-# Typesense reserves the top-level string field `id` as a document's primary key,
-# which this destination sets itself. A source column named `id` is renamed away
-# from `id` by the naming convention (see dlt_typesense.naming), so by the time a
-# row reaches this job it no longer collides (AC-TS-01).
+# Typesense document primary key; source columns named `id` are renamed in naming.py.
 RESERVED_ID_FIELD = "id"
 
-# Import actions that keep dlt's whole-file retry idempotent. `create` is rejected
-# because a retried file would fail on already-existing documents (AC-TS-07).
+# `create` is rejected: whole-file retry would fail on already-existing documents.
 _RETRY_SAFE_ACTIONS = ("upsert", "emplace")
 
 
@@ -44,10 +39,8 @@ def _user_columns(names: Sequence[str]) -> list[str]:
 def merge_document_id(collection_name: str, key_values: Sequence[Any]) -> str:
     """Deterministic Typesense document id for a merge/upsert row.
 
-    Stable across independent runs for the same collection and ordered key
-    tuple, so the same source row always maps to the same document (AC-MERGE-02,
-    AC-MERGE-04). The key is JSON-encoded so compound components can never run
-    together ambiguously: ``["a_b", "c"]`` and ``["a", "b_c"]`` stay distinct.
+    Key components are JSON-encoded so compound keys cannot collide ambiguously
+    (e.g. ``["a_b", "c"]`` vs ``["a", "b_c"]``).
     """
     key = json.dumps([str(value) for value in key_values])
     return str(uuid.uuid5(_ID_NAMESPACE, f"{collection_name}:{key}"))
@@ -56,14 +49,8 @@ def merge_document_id(collection_name: str, key_values: Sequence[Any]) -> str:
 class TypesenseLoadJob(RunnableLoadJob, HasFollowupJobs):
     """Load one JSONL file into a Typesense collection via streamed bulk import.
 
-    Disposition → document ``id`` → import ``action``:
-
-    - append / replace: ``id`` from ``_dlt_id``, ``action=upsert``
+    - append / replace / merge(insert-only): ``id`` from ``_dlt_id``, ``action=upsert``
     - merge (upsert): ``id`` = uuid5 of the primary/unique key, ``action=upsert``
-    - merge (insert-only): ``id`` from ``_dlt_id`` (shares the append path)
-
-    ``action=upsert`` (never ``create``) keeps dlt's whole-file retry idempotent:
-    re-importing the same file with the same ids is a no-op for already-loaded rows.
     """
 
     def __init__(self, file_path: str, collection_name: str) -> None:
@@ -72,7 +59,6 @@ class TypesenseLoadJob(RunnableLoadJob, HasFollowupJobs):
 
     @property
     def _client(self) -> TypesenseClient:
-        # Set by the loader (RunnableLoadJob.run_managed) before run() is called.
         return self._job_client  # type: ignore[return-value]
 
     def run(self) -> None:
@@ -111,67 +97,43 @@ class TypesenseLoadJob(RunnableLoadJob, HasFollowupJobs):
         id_fields: Sequence[str] | None,
         json_fields: Sequence[str],
     ) -> Iterator[dict[str, Any]]:
-        """Parse JSONL lines, assign the Typesense ``id``, stream documents out.
-
-        Documents are yielded one at a time so the REST client can chunk them
-        without ever holding the whole file in memory.
-        """
         for line in lines:
             line = line.strip()
             if not line:
                 continue
             raw: dict[str, Any] = json.loads(line)
-            # Drop nulls: Typesense auto-schema rejects null values, so an absent
-            # field is how "optional / no value" is represented (AC-SHAPE-04).
+            # Typesense auto-schema rejects nulls; omit the field instead.
             data = {key: value for key, value in raw.items() if value is not None}
             data[RESERVED_ID_FIELD] = self._document_id(raw, id_fields)
-            # `json`-typed columns are stored as one canonical JSON string so their
-            # representation is deterministic regardless of row order (AC-TYPE-07).
             for field in json_fields:
                 if field in data:
                     data[field] = dlt_json.dumps(data[field])
             yield data
 
     def _document_id(self, data: dict[str, Any], id_fields: Sequence[str] | None) -> str:
-        """Return the deterministic Typesense document id for a row."""
         if id_fields:
             key_values: list[Any] = []
             for field in id_fields:
                 value = data.get(field)
                 if value is None:
-                    # A null/missing key component would collapse distinct rows into
-                    # one document (or KeyError into a retry loop) — fail loudly.
                     raise TypesenseImportError(
                         f"Collection '{self._collection_name}': merge key column '{field}' is "
                         "missing or null in a row, so a deterministic document id cannot be built."
                     )
                 key_values.append(value)
             return merge_document_id(self._collection_name, key_values)
-        # append / replace / insert-only: the dlt row id is already unique and stable
-        # across whole-file retries, so use it directly.
         dlt_id = data.get("_dlt_id")
         if dlt_id is not None:
             return str(dlt_id)
-        # Should not happen for dlt-normalized data; keep the load moving with a
-        # random id rather than corrupting another document.
         return str(uuid.uuid4())
 
     @staticmethod
     def _json_fields(table: Any) -> list[str]:
-        """Names of columns typed as dlt ``json`` (kept complex through normalization)."""
         columns = table.get("columns") or {}
         return [name for name, column in columns.items() if column.get("data_type") == "json"]
 
     def _id_fields(self, table: Any) -> Sequence[str] | None:
-        """Columns used to build the Typesense document ``id``.
-
-        Returns ``None`` when the row id (``_dlt_id``) should be used: append,
-        replace, the ``insert-only`` merge strategy, and merge *child* tables
-        (nested rows have no user key — they are keyed by ``_dlt_id`` with root
-        propagation). For an ``upsert`` merge *root* table the primary key (or a
-        ``unique`` column fallback) keys the document; a root merge with neither
-        is a terminal, non-silent error (AC-MERGE-05).
-        """
+        """Columns that key the Typesense ``id``, or ``None`` to use ``_dlt_id``."""
         if table.get("write_disposition") != "merge":
             return None
 
@@ -179,16 +141,14 @@ class TypesenseLoadJob(RunnableLoadJob, HasFollowupJobs):
         if merge_strategy == "insert-only":
             return None
 
-        # Nested child tables have no user primary key; key them by _dlt_id.
         if is_nested_table(table):
             return None
 
         primary_keys = _user_columns(get_columns_names_with_prop(table, "primary_key"))
         if primary_keys:
             return primary_keys
-        # dlt stamps `unique: true` on `_dlt_id` in every table, so the unique
-        # fallback must ignore dlt system columns — otherwise the random per-run
-        # `_dlt_id` would key the upsert and every re-run would duplicate rows.
+        # dlt marks `_dlt_id` unique on every table — ignore system columns or
+        # every re-run would key on a fresh id and duplicate rows.
         unique_keys = _user_columns(get_columns_names_with_prop(table, "unique"))
         if unique_keys:
             return unique_keys
@@ -202,9 +162,9 @@ class TypesenseLoadJob(RunnableLoadJob, HasFollowupJobs):
 
 
 class TypesenseRemoveOrphansJob(RunnableLoadJob):
-    """Phase 2: delete child documents orphaned after a root merge/upsert.
+    """Delete child documents orphaned after a root merge/upsert.
 
-    Mirrors the lancedb orphan-follow-up pattern. Not used in v1 (root docs only).
+    Not implemented: merge updates root documents only; stale child rows remain.
     """
 
     def __init__(self, file_path: str, collection_name: str) -> None:
@@ -213,5 +173,6 @@ class TypesenseRemoveOrphansJob(RunnableLoadJob):
 
     def run(self) -> None:
         raise NotImplementedError(
-            "Child-table orphan cleanup is phase 2; flatten documents for v1."
+            "Child-table orphan cleanup is not implemented; "
+            "merge leaves stale nested-list documents in place."
         )

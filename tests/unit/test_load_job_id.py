@@ -23,7 +23,6 @@ def _our_caps() -> DestinationCapabilitiesContext:
 
 
 def test_merge_id_is_deterministic_across_runs() -> None:
-    """Covers: AC-MERGE-02 — same PK value yields the same document id every run."""
     row = {"sku": "A1", "title": "Widget", "_dlt_id": "row-1"}
     id_first = _job()._document_id(row, ["sku"])
     id_second = _job()._document_id(row, ["sku"])
@@ -32,13 +31,11 @@ def test_merge_id_is_deterministic_across_runs() -> None:
 
 
 def test_merge_id_depends_on_collection() -> None:
-    """Covers: AC-MERGE-02 — ids are namespaced per collection."""
     row = {"sku": "A1"}
     assert _job("cat_a")._document_id(row, ["sku"]) != _job("cat_b")._document_id(row, ["sku"])
 
 
 def test_compound_primary_key() -> None:
-    """Covers: AC-MERGE-04 — id derives from the full ordered key tuple."""
     job = _job()
     a = job._document_id({"tenant": "t1", "sku": "A1"}, ["tenant", "sku"])
     b = job._document_id({"tenant": "t2", "sku": "A1"}, ["tenant", "sku"])
@@ -48,12 +45,10 @@ def test_compound_primary_key() -> None:
 
 
 def test_id_from_dlt_id_when_no_key() -> None:
-    """Covers: AC-APPEND-01 — document id derives from _dlt_id for the append path."""
     assert _job()._document_id({"_dlt_id": "xyz", "a": 1}, None) == "xyz"
 
 
 def test_iter_documents_sets_id_from_dlt_id() -> None:
-    """Covers: AC-APPEND-01"""
     docs = list(
         _job()._iter_documents(
             iter([json.dumps({"name": "x", "_dlt_id": "row-9"})]),
@@ -65,7 +60,6 @@ def test_iter_documents_sets_id_from_dlt_id() -> None:
 
 
 def test_json_field_is_serialized_to_string() -> None:
-    """Covers: AC-TYPE-07 — json columns become one canonical JSON string."""
     docs = list(
         _job()._iter_documents(
             iter([json.dumps({"payload": {"a": 1, "b": [2, 3]}, "_dlt_id": "r"})]),
@@ -78,7 +72,6 @@ def test_json_field_is_serialized_to_string() -> None:
 
 
 def test_json_fields_detected_from_schema() -> None:
-    """Covers: AC-TYPE-07"""
     table = {
         "name": "t",
         "columns": {
@@ -90,13 +83,11 @@ def test_json_fields_detected_from_schema() -> None:
 
 
 def test_id_fields_append_returns_none() -> None:
-    """Covers: AC-APPEND-01"""
     table = {"name": "events", "write_disposition": "append", "columns": {}}
     assert _job()._id_fields(table) is None
 
 
 def test_id_fields_merge_uses_primary_key() -> None:
-    """Covers: AC-MERGE-02"""
     table = {
         "name": "products",
         "write_disposition": "merge",
@@ -106,7 +97,6 @@ def test_id_fields_merge_uses_primary_key() -> None:
 
 
 def test_id_fields_merge_unique_fallback() -> None:
-    """Covers: AC-MERGE-05 — a `unique` column keys the upsert when no primary_key."""
     table = {
         "name": "products",
         "write_disposition": "merge",
@@ -116,15 +106,12 @@ def test_id_fields_merge_unique_fallback() -> None:
 
 
 def test_id_fields_merge_no_key_raises() -> None:
-    """Covers: AC-MERGE-05 — merge with neither PK nor unique is a terminal error."""
     table = {"name": "products", "write_disposition": "merge", "columns": {}}
     with pytest.raises(TypesenseImportError):
         _job()._id_fields(table)
 
 
 def test_id_fields_ignores_dlt_id_unique_hint() -> None:
-    """Covers: AC-MERGE-05 — dlt's automatic `unique` on _dlt_id is not a user key."""
-    # dlt stamps unique=True on _dlt_id in every table; a keyless merge must still raise.
     table = {
         "name": "products",
         "write_disposition": "merge",
@@ -135,7 +122,6 @@ def test_id_fields_ignores_dlt_id_unique_hint() -> None:
 
 
 def test_id_fields_unique_fallback_excludes_dlt_id() -> None:
-    """Covers: AC-MERGE-05 — only the user unique column keys the upsert, not _dlt_id."""
     table = {
         "name": "products",
         "write_disposition": "merge",
@@ -148,7 +134,6 @@ def test_id_fields_unique_fallback_excludes_dlt_id() -> None:
 
 
 def test_document_id_rejects_null_merge_key() -> None:
-    """Covers: AC-MERGE-05 — a null/missing key component is a terminal error, not silent."""
     job = _job()
     with pytest.raises(TypesenseImportError):
         job._document_id({"sku": None, "_dlt_id": "r"}, ["sku"])
@@ -157,7 +142,6 @@ def test_document_id_rejects_null_merge_key() -> None:
 
 
 def test_id_fields_insert_only_uses_dlt_id() -> None:
-    """Covers: AC-MERGE-09 — insert-only shares the append path (id from _dlt_id)."""
     table = {
         "name": "products",
         "write_disposition": "merge",

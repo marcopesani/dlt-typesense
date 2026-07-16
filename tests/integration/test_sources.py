@@ -1,4 +1,4 @@
-"""Real-source smoke tests: sql_database, filesystem, rest_api (AC-SRC-01..03)."""
+"""Real-source smoke tests: sql_database, filesystem, rest_api."""
 
 from __future__ import annotations
 
@@ -13,11 +13,7 @@ import pytest
 pytestmark = pytest.mark.integration
 
 
-# --- AC-SRC-01: sql_database over SQLite --------------------------------------
-
-
 def test_sql_database_over_sqlite(make_pipeline, count_documents, documents, tmp_path) -> None:
-    """Covers: AC-SRC-01"""
     import sqlalchemy as sa
     from dlt.sources.sql_database import sql_database
 
@@ -52,13 +48,10 @@ def test_sql_database_over_sqlite(make_pipeline, count_documents, documents, tmp
     assert count_documents("shop_products") == 2
     assert count_documents("shop_events") == 2
 
-    # Update a product price in the source, then reload.
     with engine.begin() as conn:
         conn.execute(sa.update(products).where(products.c.sku == "A1").values(price=999))
     pipeline.run(build_source())
 
-    # Merge is in-place: still exactly 2 product docs (assert count before dict dedup,
-    # so an accidental append cannot be masked by deduplicating on sku).
     assert count_documents("shop_products") == 2
     product_rows = documents("shop_products")
     assert len(product_rows) == 2
@@ -67,11 +60,7 @@ def test_sql_database_over_sqlite(make_pipeline, count_documents, documents, tmp
     assert count_documents("shop_events") == 4  # append accumulates
 
 
-# --- AC-SRC-02: filesystem over CSV, JSONL, Parquet ---------------------------
-
-
 def test_filesystem_csv_jsonl_parquet(make_pipeline, count_documents, documents, tmp_path) -> None:
-    """Covers: AC-SRC-02"""
     import pyarrow as pa
     import pyarrow.parquet as pq
     from dlt.sources.filesystem import filesystem, read_csv, read_jsonl, read_parquet
@@ -129,13 +118,8 @@ def test_filesystem_csv_jsonl_parquet(make_pipeline, count_documents, documents,
     parquet_docs = sorted(documents("fs_parquet_rows"), key=lambda d: d["n"])
     assert [d["n"] for d in parquet_docs] == [1, 2, 3, 4]  # int64 exact
     assert parquet_docs[0]["ratio"] == 1.5  # float
-    # decimal keeps full precision as a string (AC-TYPE-04)
     assert parquet_docs[0]["amount"] == "10.25"
-    # timestamp round-trips as an ISO-8601 string (AC-TYPE-02)
     assert isinstance(parquet_docs[0]["ts"], str) and parquet_docs[0]["ts"].startswith("1970-01-01")
-
-
-# --- AC-SRC-03: rest_api against a local mock ---------------------------------
 
 
 class _MockAPIState:
@@ -176,7 +160,6 @@ def _make_handler(state: _MockAPIState, host_port: list[str]):
 
 
 def test_rest_api_paginated_incremental(make_pipeline, count_documents, tmp_path) -> None:
-    """Covers: AC-SRC-03"""
     from dlt.sources.rest_api import rest_api_source
 
     state = _MockAPIState()
@@ -221,7 +204,6 @@ def test_rest_api_paginated_incremental(make_pipeline, count_documents, tmp_path
         assert count_documents("api_api_items") == 5  # all pages loaded
         assert 0 in state.since_seen  # run 1 started from initial_value=0
 
-        # The API gains two new records; only the delta should load on the next run.
         state.since_seen.clear()
         state.items.extend(
             [
@@ -231,8 +213,6 @@ def test_rest_api_paginated_incremental(make_pipeline, count_documents, tmp_path
         )
         pipeline.run(build_source())
         assert count_documents("api_api_items") == 7
-        # The core claim: run 2 resumed from the stored cursor (since=5), i.e. only the
-        # delta was fetched — it never re-scanned from 0.
         assert state.since_seen, "run 2 issued no request"
         assert all(since == 5 for since in state.since_seen)
     finally:

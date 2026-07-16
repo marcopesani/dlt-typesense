@@ -1,7 +1,4 @@
-"""Typesense-specific behaviors and non-functional guarantees.
-
-Covers the integration slices of AC-TS-01/05/06/07/08/09 and AC-NF-01/02/03.
-"""
+"""Typesense-specific behaviors and non-functional guarantees."""
 
 from __future__ import annotations
 
@@ -19,7 +16,6 @@ pytestmark = pytest.mark.integration
 
 
 def test_source_id_column_round_trips_without_collision(make_pipeline, documents) -> None:
-    """Covers: AC-TS-01 — a source `id` lands as `__id`; Typesense id is destination-owned."""
     pipeline = make_pipeline()
 
     @dlt.resource(name="rows", write_disposition="append")
@@ -34,7 +30,6 @@ def test_source_id_column_round_trips_without_collision(make_pipeline, documents
 
 
 def test_client_chunking_is_exact_with_remainder(make_pipeline, count_documents) -> None:
-    """Covers: AC-TS-05 — N rows across several client batches (with remainder) land exactly."""
     pipeline = make_pipeline(destination_kwargs={"client_batch_size": 7})
 
     @dlt.resource(name="rows", write_disposition="append")
@@ -46,8 +41,6 @@ def test_client_chunking_is_exact_with_remainder(make_pipeline, count_documents)
 
 
 def test_file_sharding_produces_exact_totals(make_pipeline, count_documents, monkeypatch) -> None:
-    """Covers: AC-TS-06 — sharded job files all complete with an exact final count."""
-    # Force the normalizer to shard the table into multiple job files.
     monkeypatch.setenv("NORMALIZE__DATA_WRITER__FILE_MAX_ITEMS", "10")
     pipeline = make_pipeline()
 
@@ -67,14 +60,13 @@ def test_file_sharding_produces_exact_totals(make_pipeline, count_documents, mon
 
 
 def test_import_action_emplace_updates_partial(make_pipeline, documents) -> None:
-    """Covers: AC-TS-07 — emplace updates only provided fields (keeps the rest)."""
     pipeline = make_pipeline(destination_kwargs={"import_action": "emplace"})
 
     @dlt.resource(name="products", write_disposition="merge", primary_key="sku")
-    def v1():
+    def initial():
         yield {"sku": "A1", "a": 1, "b": 2}
 
-    pipeline.run(v1())
+    pipeline.run(initial())
     collection = make_pipeline.qualified_name(pipeline, "products")
 
     @dlt.resource(name="products", write_disposition="merge", primary_key="sku")
@@ -88,7 +80,6 @@ def test_import_action_emplace_updates_partial(make_pipeline, documents) -> None
 
 
 def test_bad_api_key_fails_terminally(require_server, dataset_name, tmp_path) -> None:
-    """Covers: AC-TS-08 — a wrong api_key fails terminally, no infinite retry."""
     from dlt_typesense import typesense
     from dlt_typesense.configuration import TypesenseCredentials
 
@@ -112,7 +103,6 @@ def test_bad_api_key_fails_terminally(require_server, dataset_name, tmp_path) ->
 
     with pytest.raises(PipelineStepFailed) as excinfo:
         pipeline.run(rows())
-    # The failure must be terminal (auth) — not transient, which would retry forever.
     cause = excinfo.value
     saw_terminal = False
     while cause is not None:
@@ -124,7 +114,6 @@ def test_bad_api_key_fails_terminally(require_server, dataset_name, tmp_path) ->
 
 
 def test_dataset_separator_is_honored(make_pipeline, count_documents) -> None:
-    """Covers: AC-TS-09 — a custom separator qualifies collection names."""
     pipeline = make_pipeline(dataset_name="catalog", destination_kwargs={"dataset_separator": "__"})
 
     @dlt.resource(name="products", write_disposition="append")
@@ -140,7 +129,6 @@ def test_dataset_separator_is_honored(make_pipeline, count_documents) -> None:
 def test_rerun_recovers_after_injected_failure(
     make_pipeline, count_documents, monkeypatch, disposition
 ) -> None:
-    """Covers: AC-NF-01 — any disposition converges after a transient failure + retry."""
     original = _rc.TypesenseRestClient.import_documents
     state = {"failed": False}
 
@@ -167,7 +155,6 @@ def test_rerun_recovers_after_injected_failure(
 
 
 def test_api_key_absent_from_logs_and_errors(make_pipeline, require_server, caplog) -> None:
-    """Covers: AC-NF-03 — the api_key value never appears in logs or errors."""
     import logging
 
     pipeline = make_pipeline()
@@ -179,5 +166,4 @@ def test_api_key_absent_from_logs_and_errors(make_pipeline, require_server, capl
     with caplog.at_level(logging.DEBUG):
         info = pipeline.run(rows())
     assert not info.has_failed_jobs
-    # The real (correct) api_key value must never be logged.
     assert require_server.api_key not in caplog.text

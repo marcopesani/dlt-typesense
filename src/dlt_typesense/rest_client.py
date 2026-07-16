@@ -1,14 +1,9 @@
 """Thin Typesense HTTP layer built on httpx.
 
-Import is streamed in client-sized chunks (never buffering whole files) and the
-per-line import response is parsed line-by-line: Typesense returns HTTP 200 even
-when individual documents fail, so success is decided per document, not by the
-status code. Transport and HTTP errors are mapped onto the terminal/transient
-taxonomy in :mod:`dlt_typesense.exceptions` so dlt retries only what can succeed
-on retry.
-
-The API key is sent as a header and is never placed in URLs, query strings, log
-lines, or error messages.
+Import streams in client-sized chunks. Per-line import responses are parsed
+individually: Typesense returns HTTP 200 even when documents fail. Transport and
+HTTP errors map to the terminal/transient taxonomy in
+:mod:`dlt_typesense.exceptions`. The API key is sent as a header only.
 """
 
 from __future__ import annotations
@@ -28,22 +23,14 @@ from dlt_typesense.exceptions import (
 
 API_KEY_HEADER = "X-TYPESENSE-API-KEY"
 
-# HTTP statuses that will not succeed if the exact same request is retried.
-# 413 (payload too large) is terminal: retrying the same oversized chunk cannot help.
 _TERMINAL_STATUSES = frozenset({400, 401, 403, 404, 409, 413, 422})
-
-# Cap on the number of failed-line samples kept for diagnostics (AC-NF-02).
 _MAX_ERROR_SAMPLES = 5
 _ERROR_SAMPLE_MAX_LEN = 500
 
 
 @dataclass
 class ImportSummary:
-    """Outcome of a streamed bulk import.
-
-    Only counts and a bounded set of failure samples are retained so that memory
-    stays flat regardless of file size.
-    """
+    """Outcome of a streamed bulk import (counts + bounded failure samples)."""
 
     total_count: int = 0
     failed_count: int = 0
@@ -61,7 +48,6 @@ class ImportSummary:
 
 
 def _chunked(items: Iterable[Any], size: int) -> Iterator[list[Any]]:
-    """Yield lists of at most ``size`` items, consuming ``items`` lazily."""
     chunk: list[Any] = []
     for item in items:
         chunk.append(item)
@@ -84,12 +70,8 @@ class TypesenseRestClient:
     ) -> None:
         self._credentials = credentials
         self._read_timeout_seconds = read_timeout_seconds
-        # Test seam: inject an httpx transport (e.g. MockTransport) to exercise
-        # response handling without a live server.
         self._transport = transport
         self._client: httpx.Client | None = None
-
-    # --- connection lifecycle -------------------------------------------------
 
     def open(self) -> None:
         if self._client is not None:
@@ -124,8 +106,6 @@ class TypesenseRestClient:
         creds = self._credentials
         return f"{creds.protocol}://{creds.host}:{creds.port}"
 
-    # --- low-level request helpers -------------------------------------------
-
     @property
     def _http(self) -> httpx.Client:
         if self._client is None:
@@ -136,7 +116,6 @@ class TypesenseRestClient:
         try:
             return self._http.request(method, url, **kwargs)
         except (httpx.TimeoutException, httpx.TransportError) as exc:
-            # Network-level failures are always worth retrying.
             raise TypesenseTransientError(
                 f"Typesense request to {url} failed: {type(exc).__name__}: {exc}"
             ) from exc
@@ -148,14 +127,10 @@ class TypesenseRestClient:
         message = f"Typesense {context} failed (HTTP {resp.status_code}): {detail}"
         if resp.status_code in _TERMINAL_STATUSES:
             raise TypesenseImportError(message)
-        # 5xx, 408, 429 and anything else: retry.
         raise TypesenseTransientError(message)
-
-    # --- collection CRUD ------------------------------------------------------
 
     def create_collection(self, schema: dict[str, Any]) -> dict[str, Any]:
         resp = self._request("POST", "/collections", json=schema)
-        # A concurrent creator winning the race (409) is fine: the collection exists.
         if resp.status_code == 409:
             return self.retrieve_collection(schema["name"])
         self._check_status(resp, "create collection")
@@ -184,8 +159,6 @@ class TypesenseRestClient:
         self._check_status(resp, "list collections")
         return resp.json()
 
-    # --- document operations --------------------------------------------------
-
     def import_documents(
         self,
         collection_name: str,
@@ -197,9 +170,7 @@ class TypesenseRestClient:
     ) -> ImportSummary:
         """Stream ``documents`` into a collection in client-sized chunks.
 
-        Returns an :class:`ImportSummary`; per-line failures do not raise here so
-        the caller can attach load context to the error. Transport and HTTP-level
-        failures raise terminal/transient errors immediately.
+        Per-line failures accumulate in the summary; transport/HTTP errors raise.
         """
         summary = ImportSummary()
         params = {"action": action, "batch_size": server_batch_size}
@@ -279,7 +250,6 @@ class TypesenseRestClient:
         per_page: int = 250,
         page: int = 1,
     ) -> list[dict[str, Any]]:
-        """Return the document bodies of a wildcard search (hits only)."""
         params: dict[str, Any] = {"q": "*", "per_page": per_page, "page": page}
         if filter_by:
             params["filter_by"] = filter_by
@@ -297,10 +267,6 @@ class TypesenseRestClient:
 
 
 def _extract_message(resp: httpx.Response) -> str:
-    """Best-effort human-readable detail from a Typesense error response.
-
-    Never includes credentials: Typesense error bodies carry only a ``message``.
-    """
     try:
         payload = resp.json()
         if isinstance(payload, dict) and "message" in payload:

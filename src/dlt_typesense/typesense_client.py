@@ -1,18 +1,10 @@
 """Job client: storage lifecycle, schema/state sync, and load-job creation.
 
 Templated on dlt's Qdrant destination. Tables map to Typesense collections;
-the dlt system tables live as dataset-qualified collections:
-
-- ``_dlt_version``  — one document per stored schema version
-- ``_dlt_loads``    — one document per completed load id
-- ``_dlt_pipeline_state`` — pipeline state documents (loaded via a normal job)
-
-"Newest" lookups sort by dlt's monotonically increasing integer ``version``
-column (an int64 Typesense sort field) rather than a timestamp string, so the
-ordering is unambiguous and does not depend on string-sort semantics. System
-collections use a *hybrid* schema: the fields we sort/filter on are declared
-explicitly (typed, sortable) while everything else falls through to a ``.*``
-auto field, exactly like data collections.
+system tables (``_dlt_version``, ``_dlt_loads``, ``_dlt_pipeline_state``) are
+dataset-qualified collections. Newest lookups sort by the integer ``version``
+column. System collections use a hybrid schema: sort/filter fields are declared
+explicitly, everything else falls through to ``.*`` auto.
 """
 
 from __future__ import annotations
@@ -62,25 +54,17 @@ class TypesenseClient(JobClientBase, WithStateSync):
         self.config: TypesenseClientConfiguration = config
         self.rest: TypesenseRestClient | None = None
 
-        # Normalized column orders for the system tables (mirrors qdrant).
         version_table_ = normalize_table_identifiers(version_table(), schema.naming)
         self.version_collection_properties = list(version_table_["columns"].keys())
         loads_table_ = normalize_table_identifiers(loads_table(), schema.naming)
         self.loads_collection_properties = list(loads_table_["columns"].keys())
-
-    # --- naming ---------------------------------------------------------------
 
     @property
     def dataset_name(self) -> str:
         return self.config.normalize_dataset_name(self.schema)
 
     def make_qualified_collection_name(self, table_name: str) -> str:
-        """Dataset-prefixed collection name (qdrant-style separator), bounded to 255.
-
-        dlt caps individual identifiers at ``max_identifier_length`` (255), but the
-        dataset+separator+table concatenation could in principle exceed it; a
-        deterministic hash suffix keeps the qualified name within bounds (AC-TS-09).
-        """
+        """Dataset-prefixed collection name, truncated with a hash if over 255 chars."""
         dataset_separator = self.config.dataset_separator
         if self.dataset_name:
             name = f"{self.dataset_name}{dataset_separator}{table_name}"
@@ -99,14 +83,7 @@ class TypesenseClient(JobClientBase, WithStateSync):
             self.schema.state_table_name,
         }
 
-    # --- collection schema ----------------------------------------------------
-
     def _collection_schema(self, qualified_name: str, table_name: str) -> dict[str, Any]:
-        """Return the Typesense schema for a collection.
-
-        Data tables use auto schema; system tables get a hybrid schema whose
-        sort/filter fields are declared explicitly.
-        """
         n = self.schema.naming.normalize_identifier
         if table_name == self.schema.version_table_name:
             return self._hybrid_schema(
@@ -115,7 +92,6 @@ class TypesenseClient(JobClientBase, WithStateSync):
                     {"name": n("version"), "type": "int64", "sort": True, "optional": True},
                     {"name": n("schema_name"), "type": "string", "optional": True},
                     {"name": n("version_hash"), "type": "string", "optional": True},
-                    # The schema JSON blob is stored but not indexed.
                     {"name": n("schema"), "type": "string", "index": False, "optional": True},
                 ],
             )
@@ -125,7 +101,6 @@ class TypesenseClient(JobClientBase, WithStateSync):
                 [
                     {"name": n("version"), "type": "int64", "sort": True, "optional": True},
                     {"name": n("pipeline_name"), "type": "string", "optional": True},
-                    # The compressed state blob is stored but never indexed.
                     {"name": n("state"), "type": "string", "index": False, "optional": True},
                 ],
             )
@@ -145,23 +120,17 @@ class TypesenseClient(JobClientBase, WithStateSync):
         }
 
     def _ensure_collection(self, table_name: str) -> str:
-        """Create the collection for a dlt table if missing; return its name."""
         qualified_name = self.make_qualified_collection_name(table_name)
         if not self._rest.collection_exists(qualified_name):
             self._rest.create_collection(self._collection_schema(qualified_name, table_name))
         return qualified_name
 
     def _recreate_collection(self, table_name: str) -> None:
-        """Drop and recreate a collection so it ends up empty but existing."""
         qualified_name = self.make_qualified_collection_name(table_name)
         self._rest.delete_collection(qualified_name)
         self._rest.create_collection(self._collection_schema(qualified_name, table_name))
 
-    # --- storage lifecycle ----------------------------------------------------
-
     def initialize_storage(self, truncate_tables: Iterable[str] | None = None) -> None:
-        # System collections must exist right after initialize_storage (AC-PROTO-01),
-        # not only after update_stored_schema.
         for table_name in self._system_table_names:
             self._ensure_collection(table_name)
         for table_name in truncate_tables or []:
@@ -174,7 +143,6 @@ class TypesenseClient(JobClientBase, WithStateSync):
         return self._rest.collection_exists(version_collection)
 
     def drop_storage(self) -> None:
-        """Delete every collection belonging to this dataset (system + data)."""
         existing = {c["name"] for c in self._rest.list_collections()}
         if self.dataset_name:
             prefix = f"{self.dataset_name}{self.config.dataset_separator}"
@@ -220,7 +188,6 @@ class TypesenseClient(JobClientBase, WithStateSync):
         load_id: str,
         restore: bool = False,
     ) -> LoadJob:
-        # A prepared table always carries a name.
         table_name = table["name"] or ""
         return TypesenseLoadJob(
             file_path,
@@ -228,7 +195,6 @@ class TypesenseClient(JobClientBase, WithStateSync):
         )
 
     def complete_load(self, load_id: str) -> None:
-        """Record a completed load in the `_dlt_loads` collection (AC-PROTO-07)."""
         values: list[Any] = [
             load_id,
             self.schema.name,
@@ -238,8 +204,7 @@ class TypesenseClient(JobClientBase, WithStateSync):
         ]
         assert len(values) == len(self.loads_collection_properties)
         document = dict(zip(self.loads_collection_properties, values, strict=True))
-        # Use the load id as the Typesense document id: a retried complete_load is an
-        # idempotent upsert, and the state-visibility check becomes a GET-by-id.
+        # Document id = load id so retries are idempotent and visibility is a GET.
         document["id"] = load_id
         loads_collection = self.make_qualified_collection_name(self.schema.loads_table_name)
         self._rest.upsert_document(loads_collection, document)
@@ -259,8 +224,6 @@ class TypesenseClient(JobClientBase, WithStateSync):
         document["id"] = _doc_id("version", schema.stored_version_hash)
         version_collection = self.make_qualified_collection_name(self.schema.version_table_name)
         self._rest.upsert_document(version_collection, document)
-
-    # --- state & schema sync (WithStateSync) ----------------------------------
 
     def get_stored_schema(self, schema_name: str = None) -> StorageSchemaInfo | None:  # type: ignore[assignment]
         version_collection = self.make_qualified_collection_name(self.schema.version_table_name)
@@ -299,7 +262,6 @@ class TypesenseClient(JobClientBase, WithStateSync):
             self._rest.collection_exists(state_collection)
             and self._rest.collection_exists(loads_collection)
         ):
-            # Pipeline never ran against this dataset.
             raise DestinationUndefinedEntity(
                 f"State or loads collection missing for dataset '{self.dataset_name}'."
             )
@@ -323,15 +285,12 @@ class TypesenseClient(JobClientBase, WithStateSync):
                 load_id = state.get(p_dlt_load_id)
                 if load_id is None:
                     continue
-                # State is only visible once its load has completed (AC-STATE-02).
-                # The loads document id *is* the load id, so this is a GET-by-id.
+                # Visible only after its load completed (loads doc id == load id).
                 if self._rest.get_document(loads_collection, str(load_id)) is not None:
                     return StateInfo.from_normalized_mapping(state, self.schema.naming)
             if len(documents) < page_size:
                 return None
             page += 1
-
-    # --- connection -----------------------------------------------------------
 
     @property
     def _rest(self) -> TypesenseRestClient:
@@ -359,10 +318,8 @@ class TypesenseClient(JobClientBase, WithStateSync):
 
 
 def _doc_id(*parts: str) -> str:
-    """Deterministic, URL-safe id for a housekeeping document."""
     return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
 
 
 def _eq_filter(field: str, value: str) -> str:
-    """Typesense exact-match filter; the value is backtick-wrapped for safety."""
     return f"{field}:=`{value}`"

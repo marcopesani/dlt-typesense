@@ -14,7 +14,7 @@ pytestmark = pytest.mark.integration
 
 
 def test_server_reachable(probe) -> None:
-    """The configured Typesense server answers (fails, never skips — §1)."""
+    """The configured Typesense server answers (fails if unreachable)."""
     assert probe.list_collections() is not None
 
 

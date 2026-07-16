@@ -1,11 +1,4 @@
-"""Shared test fixtures for the Typesense destination.
-
-Integration tests discover the server via plain ``TYPESENSE_*`` env vars with
-defaults matching the repo ``docker-compose.yml`` and build credentials
-explicitly, so a contributor's own ``.dlt/`` files never leak in (§1 of the
-acceptance criteria). Each test uses a unique ``dataset_name`` so the suite can
-run in parallel against one server, and collections are dropped on teardown.
-"""
+"""Shared test fixtures for the Typesense destination."""
 
 from __future__ import annotations
 
@@ -55,13 +48,11 @@ def credentials() -> TypesenseCredentials:
 
 @pytest.fixture
 def require_server(credentials: TypesenseCredentials) -> TypesenseCredentials:
-    # §1: when `-m integration` is explicitly requested and the server is
-    # unreachable, tests FAIL — they never silently skip.
     if not server_reachable(credentials):
         location = f"{credentials.protocol}://{credentials.host}:{credentials.port}"
         pytest.fail(
             f"Typesense is not reachable at {location}. Start it with "
-            "`docker compose up -d` from the repo root (see docs/acceptance-criteria.md §1)."
+            "`docker compose up -d` from the repo root."
         )
     return credentials
 
@@ -75,7 +66,7 @@ def probe(require_server: TypesenseCredentials) -> Iterator[TypesenseRestClient]
 
 @pytest.fixture
 def dataset_name() -> str:
-    return f"ac_{uuid.uuid4().hex[:12]}"
+    return f"ds_{uuid.uuid4().hex[:12]}"
 
 
 class PipelineFactory:

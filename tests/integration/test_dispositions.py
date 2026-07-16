@@ -1,4 +1,4 @@
-"""Append, replace and skip dispositions (AC-APPEND, AC-REPLACE, AC-SKIP)."""
+"""Append, replace and skip dispositions."""
 
 from __future__ import annotations
 
@@ -8,11 +8,7 @@ import pytest
 pytestmark = pytest.mark.integration
 
 
-# --- append ------------------------------------------------------------------
-
-
 def test_append_first_run_loads_all_with_dlt_fields(make_pipeline, documents) -> None:
-    """Covers: AC-APPEND-01, AC-SHAPE-01"""
     pipeline = make_pipeline()
 
     @dlt.resource(name="events", write_disposition="append")
@@ -29,7 +25,6 @@ def test_append_first_run_loads_all_with_dlt_fields(make_pipeline, documents) ->
 
 
 def test_append_accumulates_across_runs(make_pipeline, count_documents) -> None:
-    """Covers: AC-APPEND-02"""
     pipeline = make_pipeline()
 
     @dlt.resource(name="events", write_disposition="append")
@@ -42,7 +37,6 @@ def test_append_accumulates_across_runs(make_pipeline, count_documents) -> None:
 
 
 def test_whole_file_retry_is_idempotent(make_pipeline, documents, probe) -> None:
-    """Covers: AC-APPEND-03 — re-importing the same file (same ids) is a no-op."""
     pipeline = make_pipeline()
 
     @dlt.resource(name="events", write_disposition="append")
@@ -54,20 +48,18 @@ def test_whole_file_retry_is_idempotent(make_pipeline, documents, probe) -> None
     loaded = documents(collection)
     assert len(loaded) == 5
 
-    # Simulate dlt's whole-file retry: re-upsert the identical documents.
     probe.import_documents(collection, loaded, action="upsert")
     assert probe.count_documents(collection) == 5  # no duplicates
 
 
 def test_append_across_schema_evolution(make_pipeline, documents) -> None:
-    """Covers: AC-APPEND-04, AC-SHAPE-05"""
     pipeline = make_pipeline()
 
     @dlt.resource(name="events", write_disposition="append")
-    def events_v1():
+    def events_before():
         yield {"event_id": "e1", "name": "a"}
 
-    pipeline.run(events_v1())
+    pipeline.run(events_before())
 
     @dlt.resource(name="events", write_disposition="append")
     def events_v2():
@@ -80,18 +72,14 @@ def test_append_across_schema_evolution(make_pipeline, documents) -> None:
     assert docs["e2"]["extra"] == "new-field"  # new document carries new field
 
 
-# --- replace -----------------------------------------------------------------
-
-
 def test_replace_leaves_only_new_data(make_pipeline, documents) -> None:
-    """Covers: AC-REPLACE-01"""
     pipeline = make_pipeline()
 
     @dlt.resource(name="snapshot", write_disposition="replace")
-    def snapshot_v1():
+    def snapshot_before():
         yield from ({"k": i} for i in range(5))
 
-    pipeline.run(snapshot_v1())
+    pipeline.run(snapshot_before())
 
     @dlt.resource(name="snapshot", write_disposition="replace")
     def snapshot_v2():
@@ -103,14 +91,13 @@ def test_replace_leaves_only_new_data(make_pipeline, documents) -> None:
 
 
 def test_replace_survives_schema_change(make_pipeline, documents) -> None:
-    """Covers: AC-REPLACE-02"""
     pipeline = make_pipeline()
 
     @dlt.resource(name="snapshot", write_disposition="replace")
-    def snapshot_v1():
+    def snapshot_before():
         yield {"keep": "x", "drop_me": 1, "changes": 5}
 
-    pipeline.run(snapshot_v1())
+    pipeline.run(snapshot_before())
 
     @dlt.resource(name="snapshot", write_disposition="replace")
     def snapshot_v2():
@@ -121,13 +108,10 @@ def test_replace_survives_schema_change(make_pipeline, documents) -> None:
     docs = documents(make_pipeline.qualified_name(pipeline, "snapshot"))
     assert len(docs) == 1
     assert "drop_me" not in docs[0]  # no stale field/document from run 1
-    # The type change routes the value to a dlt variant column (changes__v_text);
-    # what matters for AC-REPLACE-02 is that it survived and no run-1 data remains.
     assert docs[0].get("changes") == "now-text" or docs[0].get("changes__v_text") == "now-text"
 
 
 def test_replace_zero_rows_truncates(make_pipeline, count_documents, probe) -> None:
-    """Covers: AC-REPLACE-03"""
     pipeline = make_pipeline()
 
     @dlt.resource(name="snapshot", write_disposition="replace")
@@ -149,14 +133,13 @@ def test_replace_zero_rows_truncates(make_pipeline, count_documents, probe) -> N
 
 
 def test_replace_replaces_child_tables(make_pipeline, count_documents) -> None:
-    """Covers: AC-REPLACE-04, AC-SHAPE-03"""
     pipeline = make_pipeline()
 
     @dlt.resource(name="orders", write_disposition="replace")
-    def orders_v1():
+    def orders_before():
         yield {"order_id": "o1", "items": [{"sku": "a"}, {"sku": "b"}, {"sku": "c"}]}
 
-    pipeline.run(orders_v1())
+    pipeline.run(orders_before())
     child = make_pipeline.qualified_name(pipeline, "orders__items")
     assert count_documents(child) == 3
 
@@ -169,9 +152,6 @@ def test_replace_replaces_child_tables(make_pipeline, count_documents) -> None:
     assert count_documents(child) == 1  # no orphaned run-1 child docs
 
 
-# --- skip --------------------------------------------------------------------
-
-
 # NOTE: dlt core does not emit a completable load job for a *data-bearing* `skip`
 # table — its loader raises LoadClientUnsupportedWriteDisposition for any disposition
 # outside {append, replace, merge}, verified against dlt's own `dummy` destination.
@@ -180,7 +160,6 @@ def test_replace_replaces_child_tables(make_pipeline, count_documents) -> None:
 
 
 def test_skip_writes_nothing(make_pipeline, probe) -> None:
-    """Covers: AC-SKIP-01"""
     pipeline = make_pipeline()
 
     @dlt.resource(name="ignored", write_disposition="skip")
@@ -194,7 +173,6 @@ def test_skip_writes_nothing(make_pipeline, probe) -> None:
 
 
 def test_skip_does_not_affect_siblings(make_pipeline, count_documents, probe) -> None:
-    """Covers: AC-SKIP-02"""
     pipeline = make_pipeline()
 
     @dlt.resource(name="ignored", write_disposition="skip")

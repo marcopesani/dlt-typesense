@@ -34,9 +34,7 @@ docker compose down
 The compose file pins `typesense/typesense:29.0` with API key `local-dev-key`; tests discover
 it via `TYPESENSE_HOST` / `TYPESENSE_PORT` / `TYPESENSE_PROTOCOL` / `TYPESENSE_API_KEY` env
 vars (defaults match the compose file). When `-m integration` is requested and the server is
-unreachable, tests fail rather than skip. See
-[docs/acceptance-criteria.md](docs/acceptance-criteria.md) for the environment contract and
-the criteria tests must cover (`Covers: AC-...` docstring tokens).
+unreachable, tests fail rather than skip.
 
 ## Workflow
 

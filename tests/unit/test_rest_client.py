@@ -25,7 +25,6 @@ def _client(handler) -> TypesenseRestClient:
 
 
 def test_import_parses_per_line_failures() -> None:
-    """Covers: AC-TS-03 — HTTP 200 with failed lines is counted, not treated as success."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = "\n".join(
@@ -44,7 +43,6 @@ def test_import_parses_per_line_failures() -> None:
 
 
 def test_import_streams_in_client_batches_and_passes_server_batch_size() -> None:
-    """Covers: AC-TS-05, AC-TS-09 — client-side chunking; server_batch_size query param."""
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -58,14 +56,12 @@ def test_import_streams_in_client_batches_and_passes_server_batch_size() -> None
     )
     assert summary.total_count == 5
     assert summary.failed_count == 0
-    # 5 docs / batch of 2 -> 3 HTTP requests (2, 2, 1).
     assert len(requests) == 3
     assert requests[0].url.params.get("batch_size") == "40"
     assert requests[0].url.params.get("action") == "upsert"
 
 
 def test_import_streams_lazily_not_buffered_whole() -> None:
-    """Covers: AC-TS-05 — only one client batch is materialized before the first request."""
     pulled = {"n": 0}
 
     def documents():
@@ -85,13 +81,11 @@ def test_import_streams_lazily_not_buffered_whole() -> None:
 
     summary = _client(handler).import_documents("c", documents(), client_batch_size=10)
     assert summary.total_count == 25
-    # If the file were buffered whole, all 25 would be pulled before any HTTP request.
     assert pulled_at_first_request["n"] == 10
 
 
 @pytest.mark.parametrize("status", [400, 401, 403, 404, 413, 422])
 def test_terminal_statuses_raise_terminal(status: int) -> None:
-    """Covers: AC-TS-04, AC-TS-08 — auth/validation 4xx are terminal (no retry)."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(status, json={"message": "nope"})
@@ -102,7 +96,6 @@ def test_terminal_statuses_raise_terminal(status: int) -> None:
 
 @pytest.mark.parametrize("status", [429, 500, 502, 503, 504])
 def test_transient_statuses_raise_transient(status: int) -> None:
-    """Covers: AC-TS-04 — 5xx/429 are transient (dlt retries)."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(status, json={"message": "later"})
@@ -112,7 +105,6 @@ def test_transient_statuses_raise_transient(status: int) -> None:
 
 
 def test_network_error_is_transient() -> None:
-    """Covers: AC-TS-04 — connection errors are transient."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused")
@@ -122,7 +114,6 @@ def test_network_error_is_transient() -> None:
 
 
 def test_error_message_never_contains_api_key() -> None:
-    """Covers: AC-NF-03 — the api_key never appears in error messages."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(401, json={"message": "Forbidden - a valid X-TYPESENSE-API-KEY"})

@@ -5,9 +5,6 @@
 
 **Typesense document destination for [dlt](https://dlthub.com)** — load data into Typesense collections with proper write dispositions (`append`, `replace`, `merge`/`upsert`), not as a blind reverse-ETL sink.
 
-> Status: **v1**. All v1 acceptance criteria are implemented; see
-> [docs/acceptance-criteria.md](docs/acceptance-criteria.md).
-
 ## Why a full destination?
 
 Typesense is treated as a **document database**. dlt tables map to Typesense
@@ -31,9 +28,7 @@ LanceDB): `JobClientBase` + JSONL load jobs + `WithStateSync` for incremental
 pipelines. Suitable for multi-million-row syncs via file sharding and parallel
 import jobs.
 
-See [docs/architecture.md](docs/architecture.md) for module seams and scale
-notes, and [docs/acceptance-criteria.md](docs/acceptance-criteria.md) for the
-behavioral contract.
+See [docs/architecture.md](docs/architecture.md) for module seams and scale notes.
 
 ## Install
 
@@ -94,14 +89,14 @@ Passed to `typesense(...)` or resolved from config (`destination.typesense.*`):
 | `connection_timeout_seconds` | `5.0` | Connect timeout |
 | `read_timeout_seconds` | `180.0` | Read timeout for long import requests |
 
-## Known limitations (v1)
+## Behavior notes
 
 - **Auto collection schema.** Collections are created with Typesense auto
-  schema (`.*` field). Explicit typed field maps and `typesense_adapter` hints
-  (facet/sort/index) are phase 2.
-- **Child-table orphans under merge.** Merge does not remove orphaned
-  child-table documents when nested-list items disappear (orphan cleanup is
-  phase 2). Root documents stay correct.
+  schema (`.*` field). Explicit typed field maps and `typesense_adapter`
+  facet/sort/index hints are not applied.
+- **Child tables under merge.** Merge updates root documents in place. When
+  nested-list items disappear from the source, orphaned child-table documents
+  are not deleted. Root documents stay correct.
 - **Reserved `id`.** Typesense reserves the top-level document `id`, which this
   destination manages (from `_dlt_id` or the merge key). A *source* column named
   `id` is renamed to `__id` by the naming convention, so its value is preserved
@@ -113,8 +108,8 @@ Passed to `typesense(...)` or resolved from config (`destination.typesense.*`):
 - **Merge without a key.** A `merge` table with neither a `primary_key` nor a
   `unique` column cannot form a deterministic id and fails with a terminal
   error rather than silently loading duplicates.
-- **Replace is drop + recreate** (not alias-swap). A concurrent reader can
-  observe the empty window mid-replace; atomic alias-swap replace is phase 2.
+- **Replace is drop + recreate.** A concurrent reader can observe an empty
+  collection window mid-replace.
 
 ## Development
 

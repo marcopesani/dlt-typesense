@@ -35,10 +35,7 @@ def main() -> None:
         destination=typesense(),
         dataset_name="catalog",
     )
-    # First run inserts both products; re-running upserts them in place
-    # (same deterministic document id from the `sku` primary key).
-    info = pipeline.run(products())
-    print(info)
+    print(pipeline.run(products()))
 
 
 if __name__ == "__main__":

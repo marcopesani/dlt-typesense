@@ -1,4 +1,4 @@
-"""Merge disposition: upsert and insert-only (AC-MERGE-01..10)."""
+"""Merge disposition: upsert and insert-only."""
 
 from __future__ import annotations
 
@@ -21,7 +21,6 @@ def _one(collection_documents: list[dict], **match) -> dict:
 
 
 def test_unsupported_strategy_fails_writing_nothing(make_pipeline, probe) -> None:
-    """Covers: AC-MERGE-01"""
     pipeline = make_pipeline()
 
     @dlt.resource(
@@ -34,7 +33,6 @@ def test_unsupported_strategy_fails_writing_nothing(make_pipeline, probe) -> Non
 
     with pytest.raises(PipelineStepFailed) as excinfo:
         pipeline.run(products())
-    # The root cause is a capabilities error naming the strategy and the supported list.
     cause: BaseException | None = excinfo.value
     while cause is not None and not isinstance(cause, DestinationCapabilitiesException):
         cause = cause.__cause__
@@ -42,12 +40,10 @@ def test_unsupported_strategy_fails_writing_nothing(make_pipeline, probe) -> Non
     message = str(cause)
     assert "delete-insert" in message
     assert "upsert" in message and "insert-only" in message
-    # No collection was created for the table.
     assert not probe.collection_exists(make_pipeline.qualified_name(pipeline, "products"))
 
 
 def test_deterministic_id_from_primary_key(make_pipeline, documents) -> None:
-    """Covers: AC-MERGE-02"""
     pipeline_one = make_pipeline(dataset_name="catalog")
 
     @dlt.resource(name="products", write_disposition="merge", primary_key="sku")
@@ -60,7 +56,6 @@ def test_deterministic_id_from_primary_key(make_pipeline, documents) -> None:
     doc = _one(documents(collection), sku="A1")
     assert doc["id"] == expected_id
 
-    # An independent pipeline run over the same dataset produces the same id.
     pipeline_two = make_pipeline(dataset_name="catalog")
     pipeline_two.run(products())
     docs = documents(collection)
@@ -69,14 +64,13 @@ def test_deterministic_id_from_primary_key(make_pipeline, documents) -> None:
 
 
 def test_updates_happen_in_place(make_pipeline, documents) -> None:
-    """Covers: AC-MERGE-03, AC-MERGE-06"""
     pipeline = make_pipeline()
 
     @dlt.resource(name="products", write_disposition="merge", primary_key="sku")
-    def v1():
+    def initial():
         yield {"sku": "A1", "price": 10}
 
-    pipeline.run(v1())
+    pipeline.run(initial())
     collection = make_pipeline.qualified_name(pipeline, "products")
     after_first = documents(collection)
     assert len(after_first) == 1 and after_first[0]["price"] == 10
@@ -92,7 +86,6 @@ def test_updates_happen_in_place(make_pipeline, documents) -> None:
 
 
 def test_double_run_is_identical(make_pipeline, documents) -> None:
-    """Covers: AC-MERGE-06"""
     pipeline = make_pipeline()
 
     @dlt.resource(name="products", write_disposition="merge", primary_key="sku")
@@ -108,7 +101,6 @@ def test_double_run_is_identical(make_pipeline, documents) -> None:
 
 
 def test_compound_primary_keys(make_pipeline, documents) -> None:
-    """Covers: AC-MERGE-04"""
     pipeline = make_pipeline(dataset_name="catalog")
 
     @dlt.resource(name="stock", write_disposition="merge", primary_key=["tenant", "sku"])
@@ -134,7 +126,6 @@ def test_compound_primary_keys(make_pipeline, documents) -> None:
 
 
 def test_unique_hint_keys_the_upsert(make_pipeline, documents) -> None:
-    """Covers: AC-MERGE-05 — a `unique` column is the id fallback."""
     pipeline = make_pipeline()
 
     @dlt.resource(
@@ -142,10 +133,10 @@ def test_unique_hint_keys_the_upsert(make_pipeline, documents) -> None:
         write_disposition="merge",
         columns={"code": {"unique": True}},
     )
-    def v1():
+    def initial():
         yield {"code": "X", "price": 1}
 
-    pipeline.run(v1())
+    pipeline.run(initial())
     collection = make_pipeline.qualified_name(pipeline, "products")
 
     @dlt.resource(
@@ -163,7 +154,6 @@ def test_unique_hint_keys_the_upsert(make_pipeline, documents) -> None:
 
 
 def test_merge_without_key_is_terminal(make_pipeline) -> None:
-    """Covers: AC-MERGE-05 — merge with neither PK nor unique fails, not silent-dup."""
     pipeline = make_pipeline()
 
     @dlt.resource(name="products", write_disposition="merge")
@@ -175,15 +165,14 @@ def test_merge_without_key_is_terminal(make_pipeline) -> None:
 
 
 def test_mixed_insert_and_update_batch(make_pipeline, documents) -> None:
-    """Covers: AC-MERGE-08"""
     pipeline = make_pipeline()
 
     @dlt.resource(name="products", write_disposition="merge", primary_key="sku")
-    def v1():
+    def initial():
         yield {"sku": "A1", "price": 1}
         yield {"sku": "B2", "price": 2}
 
-    pipeline.run(v1())
+    pipeline.run(initial())
     collection = make_pipeline.qualified_name(pipeline, "products")
 
     @dlt.resource(name="products", write_disposition="merge", primary_key="sku")
@@ -197,8 +186,6 @@ def test_mixed_insert_and_update_batch(make_pipeline, documents) -> None:
 
 
 def test_merge_retry_converges(make_pipeline, documents, monkeypatch) -> None:
-    """Covers: AC-MERGE-07, AC-NF-01 — a mid-import interruption retries and converges."""
-    # Inject a real transient failure on the first import; dlt retries the job.
     original = _rc.TypesenseRestClient.import_documents
     state = {"failed": False}
 
@@ -221,13 +208,11 @@ def test_merge_retry_converges(make_pipeline, documents, monkeypatch) -> None:
     assert not info.has_failed_jobs
     assert state["failed"]  # the failure really was injected
     collection = make_pipeline.qualified_name(pipeline, "products")
-    # Converged to exactly a single clean run: no duplicates, no missing rows.
     docs = {d["sku"]: d["n"] for d in documents(collection)}
     assert docs == {f"S{i}": i for i in range(5)}
 
 
 def test_insert_only_never_modifies_and_retry_idempotent(make_pipeline, documents, probe) -> None:
-    """Covers: AC-MERGE-09"""
     pipeline = make_pipeline()
 
     @dlt.resource(
@@ -245,20 +230,18 @@ def test_insert_only_never_modifies_and_retry_idempotent(make_pipeline, document
     for doc in docs:
         assert doc["id"] == doc["_dlt_id"]  # keyed by _dlt_id (append path)
 
-    # Same-package retry stays idempotent.
     probe.import_documents(collection, docs, action="upsert")
     assert probe.count_documents(collection) == 3
 
 
-def test_v1_child_table_orphans_remain_under_merge(make_pipeline, count_documents) -> None:
-    """Covers: AC-MERGE-10 — v1 keeps stale child docs (documented limitation)."""
+def test_merge_leaves_stale_child_documents(make_pipeline, count_documents) -> None:
     pipeline = make_pipeline()
 
     @dlt.resource(name="orders", write_disposition="merge", primary_key="order_id")
-    def v1():
+    def initial():
         yield {"order_id": "o1", "items": [{"sku": "a"}, {"sku": "b"}]}
 
-    pipeline.run(v1())
+    pipeline.run(initial())
     child = make_pipeline.qualified_name(pipeline, "orders__items")
     assert count_documents(child) == 2
 
@@ -267,6 +250,5 @@ def test_v1_child_table_orphans_remain_under_merge(make_pipeline, count_document
         yield {"order_id": "o1", "items": [{"sku": "a"}]}  # dropped "b"
 
     pipeline.run(v2())
-    # Root stays correct; stale child docs are NOT removed in v1.
     assert count_documents(make_pipeline.qualified_name(pipeline, "orders")) == 1
     assert count_documents(child) > 1
