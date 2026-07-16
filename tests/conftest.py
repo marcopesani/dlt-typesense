@@ -11,10 +11,11 @@ from typing import Any, cast
 import dlt
 import httpx
 import pytest
+import typesense as ts_sdk
+from typesense.exceptions import ObjectNotFound
 
 from dlt_typesense import typesense
 from dlt_typesense.configuration import TypesenseCredentials
-from dlt_typesense.rest_client import TypesenseRestClient
 from dlt_typesense.typesense_client import TypesenseClient
 
 
@@ -58,10 +59,11 @@ def require_server(credentials: TypesenseCredentials) -> TypesenseCredentials:
 
 
 @pytest.fixture
-def probe(require_server: TypesenseCredentials) -> Iterator[TypesenseRestClient]:
-    """A direct REST client for asserting Typesense state independently."""
-    with TypesenseRestClient(require_server) as client:
-        yield client
+def probe(require_server: TypesenseCredentials) -> Iterator[ts_sdk.Client]:
+    """A direct Typesense client for asserting server state independently."""
+    client = require_server.get_client()
+    yield client
+    client.api_call.close()
 
 
 @pytest.fixture
@@ -116,11 +118,27 @@ def make_pipeline(
 
 
 @pytest.fixture
-def count_documents(probe: TypesenseRestClient) -> Callable[[str], int]:
+def collection_exists(probe: ts_sdk.Client) -> Callable[[str], bool]:
+    def _exists(collection_name: str) -> bool:
+        try:
+            probe.collections[collection_name].retrieve()
+        except ObjectNotFound:
+            return False
+        return True
+
+    return _exists
+
+
+@pytest.fixture
+def count_documents(probe: ts_sdk.Client) -> Callable[[str], int]:
     def _count(collection_name: str) -> int:
-        if not probe.collection_exists(collection_name):
+        try:
+            response = probe.collections[collection_name].documents.search(
+                cast("Any", {"q": "*", "per_page": 0})
+            )
+        except ObjectNotFound:
             return 0
-        return probe.count_documents(collection_name)
+        return int(response.get("found", 0))
 
     return _count
 
@@ -136,11 +154,13 @@ def open_client() -> Callable[[dlt.Pipeline], AbstractContextManager[TypesenseCl
 
 
 @pytest.fixture
-def documents(probe: TypesenseRestClient) -> Callable[..., list[dict[str, Any]]]:
-    def _documents(collection_name: str, **kwargs: Any) -> list[dict[str, Any]]:
-        if not probe.collection_exists(collection_name):
+def documents(probe: ts_sdk.Client) -> Callable[..., list[dict[str, Any]]]:
+    def _documents(collection_name: str, **params: Any) -> list[dict[str, Any]]:
+        params = {"q": "*", "per_page": 250, **params}
+        try:
+            response = probe.collections[collection_name].documents.search(cast("Any", params))
+        except ObjectNotFound:
             return []
-        kwargs.setdefault("per_page", 250)
-        return probe.search_documents(collection_name, **kwargs)
+        return [cast("dict[str, Any]", hit["document"]) for hit in response.get("hits", [])]
 
     return _documents

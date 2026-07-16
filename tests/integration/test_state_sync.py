@@ -25,7 +25,7 @@ def test_stored_schema_round_trips_by_name_and_hash(make_pipeline, open_client) 
         assert by_name.schema == by_hash.schema  # identical stored content
 
 
-def test_state_visible_only_after_complete_load(make_pipeline, open_client) -> None:
+def test_state_visible_only_after_complete_load(make_pipeline, open_client, probe) -> None:
     pipeline = make_pipeline()
 
     @dlt.resource(name="items", write_disposition="append")
@@ -48,7 +48,7 @@ def test_state_visible_only_after_complete_load(make_pipeline, open_client) -> N
             naming.normalize_identifier("created_at"): "2099-01-01T00:00:00+00:00",
             naming.normalize_identifier("_dlt_load_id"): "load-that-never-completed",
         }
-        client.rest.upsert_document(state_collection, forged)
+        probe.collections[state_collection].documents.upsert(forged)
 
         still = client.get_stored_state(pipeline.pipeline_name)
         assert still is not None

@@ -23,7 +23,7 @@ classifiers = [
 ]
 dependencies = [
     "dlt>=1.9,<2",
-    "typesense>=0.21",
+    "typesense>=2.0,<3",
     "httpx>=0.27",
 ]
 

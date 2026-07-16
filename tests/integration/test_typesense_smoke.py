@@ -15,7 +15,7 @@ pytestmark = pytest.mark.integration
 
 def test_server_reachable(probe) -> None:
     """The configured Typesense server answers (fails if unreachable)."""
-    assert probe.list_collections() is not None
+    assert probe.collections.retrieve() is not None
 
 
 def test_minimal_pipeline_runs(make_pipeline, count_documents) -> None:
