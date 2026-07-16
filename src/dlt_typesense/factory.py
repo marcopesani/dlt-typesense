@@ -27,6 +27,8 @@ class typesense(Destination[TypesenseClientConfiguration, "TypesenseClient"]):
         caps = DestinationCapabilitiesContext()
         caps.preferred_loader_file_format = "jsonl"
         caps.supported_loader_file_formats = ["jsonl"]
+        # Rename a source `id` column away from Typesense's reserved document id.
+        caps.naming_convention = "dlt_typesense.naming"
         caps.has_case_sensitive_identifiers = True
         caps.max_identifier_length = 255
         caps.max_column_identifier_length = 255

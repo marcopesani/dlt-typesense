@@ -1,16 +1,18 @@
-"""Example skeleton: merge/upsert products into Typesense.
+"""Merge/upsert products into Typesense keyed by a primary key.
 
-This example will fail until load jobs are implemented. It documents the
-intended API for contributors and early adopters.
+Run a local Typesense first (repo root):
 
-Secrets (`.dlt/secrets.toml`):
+    docker compose up -d
+
+Credentials resolve from ``.dlt/secrets.toml`` or ``TYPESENSE_*`` /
+``DESTINATION__TYPESENSE__CREDENTIALS__*`` env vars:
 
 ```toml
 [destination.typesense.credentials]
 host = "localhost"
 port = 8108
 protocol = "http"
-api_key = "xyz"
+api_key = "local-dev-key"
 ```
 """
 
@@ -33,7 +35,8 @@ def main() -> None:
         destination=typesense(),
         dataset_name="catalog",
     )
-    # Will raise NotImplementedError until TypesenseLoadJob.run is implemented.
+    # First run inserts both products; re-running upserts them in place
+    # (same deterministic document id from the `sku` primary key).
     info = pipeline.run(products())
     print(info)
 

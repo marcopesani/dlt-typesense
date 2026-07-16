@@ -11,6 +11,7 @@ from dlt.common.destination.client import (
     DestinationClientConfiguration,
     DestinationClientDwhConfiguration,
 )
+from dlt.common.typing import TSecretStrValue
 
 
 @configspec
@@ -20,7 +21,10 @@ class TypesenseCredentials(CredentialsConfiguration):
     host: str = "localhost"
     port: int = 8108
     protocol: str = "http"
-    api_key: str = None  # type: ignore[assignment]
+    # TSecretStrValue is non-optional, so a missing key makes the config partial and
+    # dlt raises ConfigFieldMissingException naming `api_key` before any load starts.
+    # The SecretSentinel annotation keeps the value out of reprs, logs, and telemetry.
+    api_key: TSecretStrValue = None  # type: ignore[assignment]
     """Admin API key used for collection and document writes."""
 
     connection_timeout_seconds: float = 5.0
@@ -59,6 +63,25 @@ class TypesenseClientConfiguration(DestinationClientDwhConfiguration):
 
     read_timeout_seconds: float = 180.0
     """Read timeout for long-running import requests."""
+
+    def on_resolved(self) -> None:
+        # Reject unsupported knobs before any load starts, with a clear message
+        # naming the requested value and what is supported (AC-CAP-03, AC-TS-07).
+        # `None` means "use the capability default", so only explicit values are checked.
+        from dlt.common.destination.exceptions import DestinationCapabilitiesException
+
+        supported_replace = ["truncate-and-insert"]
+        if self.replace_strategy is not None and self.replace_strategy not in supported_replace:
+            raise DestinationCapabilitiesException(
+                f"replace_strategy='{self.replace_strategy}' is not supported by the Typesense "
+                f"destination (no staging dataset). Supported: {supported_replace}."
+            )
+        supported_actions = ["upsert", "emplace"]
+        if self.import_action not in supported_actions:
+            raise DestinationCapabilitiesException(
+                f"import_action='{self.import_action}' is not supported; use one of "
+                f"{supported_actions}. 'create' breaks dlt's whole-file retry idempotency."
+            )
 
     def fingerprint(self) -> str:
         """Return a stable fingerprint of the connection location."""
