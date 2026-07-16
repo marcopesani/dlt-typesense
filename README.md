@@ -15,11 +15,17 @@ Typesense is treated as a **document database**:
 |-------------|--------------------|
 | `append` | Bulk import; document `id` from `_dlt_id`; `action=upsert` |
 | `replace` | Truncate collection (drop/recreate; later alias-swap), then import |
-| `merge` | Upsert by `primary_key` → deterministic Typesense `id` |
+| `merge` (`upsert`) | Upsert by `primary_key` → deterministic Typesense `id` |
+| `merge` (`insert-only`) | Insert keyed by `_dlt_id`; existing documents never modified |
 
-This matches dlt’s non-SQL destinations (e.g. Qdrant): `JobClientBase` + JSONL load jobs + `WithStateSync` for incremental pipelines. Suitable for multi-million-row syncs via file sharding and parallel import jobs.
+This matches dlt’s non-SQL destinations (e.g. Qdrant; `insert-only` follows LanceDB): `JobClientBase` + JSONL load jobs + `WithStateSync` for incremental pipelines. Suitable for multi-million-row syncs via file sharding and parallel import jobs.
 
-See [docs/architecture.md](docs/architecture.md) for module seams and scale notes.
+Known v1 limitation: merge does not remove orphaned child-table documents when nested list
+items disappear (orphan cleanup is phase 2).
+
+See [docs/architecture.md](docs/architecture.md) for module seams and scale notes, and
+[docs/acceptance-criteria.md](docs/acceptance-criteria.md) for the behavioral contract the
+implementation is built against.
 
 ## Install (development)
 

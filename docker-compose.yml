@@ -1,0 +1,24 @@
+services:
+  typesense:
+    image: typesense/typesense:29.0 # typesense-py 2.0.0 requires server >= 28
+    ports:
+      - "8108:8108"
+    environment:
+      TYPESENSE_API_KEY: local-dev-key
+      TYPESENSE_DATA_DIR: /data
+    tmpfs:
+      - /data # ephemeral: wiped on `compose down` — right for tests
+    healthcheck:
+      # image ships no curl/wget; issue the HTTP /health check over bash's /dev/tcp
+      # (explicit bash: the image's /bin/sh is dash, which lacks /dev/tcp; a bare TCP
+      # probe is not enough — the port opens before the API reports {"ok":true})
+      test:
+        [
+          "CMD",
+          "bash",
+          "-c",
+          'exec 3<>/dev/tcp/localhost/8108 && printf "GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3 && grep -q "\"ok\":true" <&3',
+        ]
+      interval: 2s
+      timeout: 2s
+      retries: 30

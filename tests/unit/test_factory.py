@@ -17,7 +17,8 @@ def test_factory_capabilities() -> None:
     caps = dest._raw_capabilities()
     assert caps.preferred_loader_file_format == "jsonl"
     assert caps.supported_loader_file_formats == ["jsonl"]
-    assert caps.supported_merge_strategies == ["upsert"]
+    # Covers: AC-CAP-02 — "upsert" first is semantic (dlt's default merge strategy)
+    assert caps.supported_merge_strategies == ["upsert", "insert-only"]
     assert caps.supported_replace_strategies == ["truncate-and-insert"]
     assert caps.supports_ddl_transactions is False
     assert caps.recommended_file_size == 64_000_000

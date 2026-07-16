@@ -56,11 +56,37 @@ jobs:
       - name: Pytest
         run: uv run pytest
 
+  integration:
+    name: integration
+    runs-on: ubuntu-latest
+    services:
+      typesense:
+        image: typesense/typesense:29.0
+        ports:
+          - 8108:8108
+        env:
+          TYPESENSE_API_KEY: ci-test-key
+          TYPESENSE_DATA_DIR: /tmp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Sync
+        run: uv sync --group dev
+      - name: Wait for Typesense
+        run: timeout 30 bash -c 'until curl -sf http://localhost:8108/health | grep -q "\"ok\":true"; do sleep 1; done'
+      - name: Pytest (integration)
+        run: uv run pytest -m integration
+        env:
+          TYPESENSE_API_KEY: ci-test-key
+
   # Single required status check for branch protection (matrix expands job names)
   ci-success:
     name: ci-success
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, test]
+    needs: [lint, typecheck, test, integration]
     if: always()
     steps:
       - name: All jobs green
@@ -68,3 +94,4 @@ jobs:
           test "${{ needs.lint.result }}" = "success"
           test "${{ needs.typecheck.result }}" = "success"
           test "${{ needs.test.result }}" = "success"
+          test "${{ needs.integration.result }}" = "success"

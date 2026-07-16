@@ -23,7 +23,7 @@ The package mirrors dlt’s **qdrant** destination:
 | Client | `JobClientBase` + `WithStateSync` |
 | Loads | `RunnableLoadJob` reading JSONL packages |
 | Format | Preferred loader format: `jsonl` |
-| Merge | Strategy: `upsert` |
+| Merge | Strategies: `upsert` (default, list-first), `insert-only` (lancedb precedent) |
 | Replace | Strategy: `truncate-and-insert` |
 
 Secondary references:
@@ -50,9 +50,13 @@ exceptions.py        → terminal vs transient import errors
 |-------------|---------------------|---------------|-----------------|
 | append | bulk JSONL import | `_dlt_id` | `upsert` |
 | replace | drop+recreate collection (later: alias-swap), then import | `_dlt_id` | `upsert` |
-| merge | bulk import keyed on PK | uuid5 / hash of `primary_key` | `upsert` / `emplace` |
+| merge (`upsert`) | bulk import keyed on PK | uuid5 / hash of `primary_key` | `upsert` / `emplace` |
+| merge (`insert-only`) | bulk import, append code path | `_dlt_id` | `upsert` |
 
 Always prefer `upsert`/`emplace` over `create` so dlt’s whole-file retry is idempotent.
+
+The behavioral contract for all of the above lives in
+[acceptance-criteria.md](acceptance-criteria.md).
 
 ## Scale
 
