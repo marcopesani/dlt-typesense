@@ -15,7 +15,7 @@ from dlt_typesense.typesense_client import TypesenseClient
 
 
 def test_version() -> None:
-    assert __version__ == "0.0.1"
+    assert __version__ == "0.1.0"
 
 
 def test_non_jsonl_loader_format_rejected_before_load(tmp_path) -> None:
