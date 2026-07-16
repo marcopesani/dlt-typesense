@@ -8,8 +8,8 @@ import dlt
 import pytest
 from dlt.common.destination.exceptions import DestinationTerminalException
 from dlt.pipeline.exceptions import PipelineStepFailed
+from typesense.sync.documents import Documents
 
-from dlt_typesense import load_jobs as _lj
 from dlt_typesense.exceptions import TypesenseTransientError
 
 pytestmark = pytest.mark.integration
@@ -129,17 +129,18 @@ def test_dataset_separator_is_honored(make_pipeline, count_documents) -> None:
 def test_rerun_recovers_after_injected_failure(
     make_pipeline, count_documents, monkeypatch, disposition
 ) -> None:
-    original = _lj.import_documents
+    original = Documents.import_
     state = {"failed": False}
 
-    def flaky(ts, collection, docs, **kwargs):
+    def flaky(self, documents, import_parameters=None, batch_size=None):
         if not state["failed"]:
             state["failed"] = True
-            list(docs)
+            if not isinstance(documents, (bytes, str)):
+                list(documents)
             raise TypesenseTransientError("injected transient failure")
-        return original(ts, collection, docs, **kwargs)
+        return original(self, documents, import_parameters, batch_size)
 
-    monkeypatch.setattr(_lj, "import_documents", flaky)
+    monkeypatch.setattr(Documents, "import_", flaky)
 
     pipeline = make_pipeline()
     resource_kwargs: dict[str, Any] = {"primary_key": "k"} if disposition == "merge" else {}

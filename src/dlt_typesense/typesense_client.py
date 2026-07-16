@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterable
+from contextlib import suppress
 from types import TracebackType
 from typing import Any, cast
 
@@ -38,7 +39,7 @@ from dlt.common.schema.utils import (
 from typesense.exceptions import ObjectAlreadyExists, ObjectNotFound
 
 from dlt_typesense.configuration import TypesenseClientConfiguration
-from dlt_typesense.exceptions import TYPESENSE_ERRORS, map_typesense_error
+from dlt_typesense.exceptions import wrap_typesense_error
 from dlt_typesense.load_jobs import TypesenseLoadJob
 from dlt_typesense.type_mapper import collection_schema_auto
 
@@ -126,31 +127,16 @@ class TypesenseClient(JobClientBase, WithStateSync):
             self._ts.collections[name].retrieve()
         except ObjectNotFound:
             return False
-        except TYPESENSE_ERRORS as exc:
-            raise map_typesense_error(exc, "retrieve collection") from exc
         return True
 
     def _create_collection(self, schema: dict[str, Any]) -> None:
-        try:
+        # Concurrent creation is fine — the collection is there, which is all we need.
+        with suppress(ObjectAlreadyExists):
             self._ts.collections.create(cast("Any", schema))
-        except ObjectAlreadyExists:
-            pass  # concurrent creation; the collection is there, which is all we need
-        except TYPESENSE_ERRORS as exc:
-            raise map_typesense_error(exc, "create collection") from exc
 
     def _delete_collection(self, name: str) -> None:
-        try:
+        with suppress(ObjectNotFound):
             self._ts.collections[name].delete()
-        except ObjectNotFound:
-            pass
-        except TYPESENSE_ERRORS as exc:
-            raise map_typesense_error(exc, "delete collection") from exc
-
-    def _upsert_document(self, collection_name: str, document: dict[str, Any]) -> None:
-        try:
-            self._ts.collections[collection_name].documents.upsert(document)
-        except TYPESENSE_ERRORS as exc:
-            raise map_typesense_error(exc, "document upsert") from exc
 
     def _search_documents(
         self,
@@ -166,10 +152,7 @@ class TypesenseClient(JobClientBase, WithStateSync):
             params["filter_by"] = filter_by
         if sort_by:
             params["sort_by"] = sort_by
-        try:
-            response = self._ts.collections[collection_name].documents.search(cast("Any", params))
-        except TYPESENSE_ERRORS as exc:
-            raise map_typesense_error(exc, "search") from exc
+        response = self._ts.collections[collection_name].documents.search(cast("Any", params))
         return [cast("dict[str, Any]", hit["document"]) for hit in response.get("hits", [])]
 
     def _ensure_collection(self, table_name: str) -> str:
@@ -183,23 +166,22 @@ class TypesenseClient(JobClientBase, WithStateSync):
         self._delete_collection(qualified_name)
         self._create_collection(self._collection_schema(qualified_name, table_name))
 
+    @wrap_typesense_error
     def initialize_storage(self, truncate_tables: Iterable[str] | None = None) -> None:
         for table_name in self._system_table_names:
             self._ensure_collection(table_name)
         for table_name in truncate_tables or []:
-            qualified_name = self.make_qualified_collection_name(table_name)
-            if self._collection_exists(qualified_name):
-                self._recreate_collection(table_name)
+            # _delete_collection already tolerates 404; no pre-exists probe needed.
+            self._recreate_collection(table_name)
 
+    @wrap_typesense_error
     def is_storage_initialized(self) -> bool:
         version_collection = self.make_qualified_collection_name(self.schema.version_table_name)
         return self._collection_exists(version_collection)
 
+    @wrap_typesense_error
     def drop_storage(self) -> None:
-        try:
-            collections = self._ts.collections.retrieve()
-        except TYPESENSE_ERRORS as exc:
-            raise map_typesense_error(exc, "list collections") from exc
+        collections = self._ts.collections.retrieve()
         existing = {c["name"] for c in collections}
         if self.dataset_name:
             prefix = f"{self.dataset_name}{self.config.dataset_separator}"
@@ -209,6 +191,7 @@ class TypesenseClient(JobClientBase, WithStateSync):
         for name in targets:
             self._delete_collection(name)
 
+    @wrap_typesense_error
     def update_stored_schema(
         self,
         only_tables: Iterable[str] = None,  # type: ignore[assignment]
@@ -251,6 +234,7 @@ class TypesenseClient(JobClientBase, WithStateSync):
             collection_name=self.make_qualified_collection_name(table_name),
         )
 
+    @wrap_typesense_error
     def complete_load(self, load_id: str) -> None:
         values: list[Any] = [
             load_id,
@@ -264,7 +248,7 @@ class TypesenseClient(JobClientBase, WithStateSync):
         # Document id = load id so retries are idempotent and visibility is a GET.
         document["id"] = load_id
         loads_collection = self.make_qualified_collection_name(self.schema.loads_table_name)
-        self._upsert_document(loads_collection, document)
+        self._ts.collections[loads_collection].documents.upsert(document)
 
     def _update_schema_in_storage(self, schema: Schema) -> None:
         schema_str = json.dumps(schema.to_dict())
@@ -280,8 +264,9 @@ class TypesenseClient(JobClientBase, WithStateSync):
         document = dict(zip(self.version_collection_properties, values, strict=True))
         document["id"] = _doc_id("version", schema.stored_version_hash)
         version_collection = self.make_qualified_collection_name(self.schema.version_table_name)
-        self._upsert_document(version_collection, document)
+        self._ts.collections[version_collection].documents.upsert(document)
 
+    @wrap_typesense_error
     def get_stored_schema(self, schema_name: str = None) -> StorageSchemaInfo | None:  # type: ignore[assignment]
         version_collection = self.make_qualified_collection_name(self.schema.version_table_name)
         if not self._collection_exists(version_collection):
@@ -298,6 +283,7 @@ class TypesenseClient(JobClientBase, WithStateSync):
             return None
         return StorageSchemaInfo.from_normalized_mapping(documents[0], self.schema.naming)
 
+    @wrap_typesense_error
     def get_stored_schema_by_hash(self, version_hash: str) -> StorageSchemaInfo | None:
         version_collection = self.make_qualified_collection_name(self.schema.version_table_name)
         if not self._collection_exists(version_collection):
@@ -312,6 +298,7 @@ class TypesenseClient(JobClientBase, WithStateSync):
             return None
         return StorageSchemaInfo.from_normalized_mapping(documents[0], self.schema.naming)
 
+    @wrap_typesense_error
     def get_stored_state(self, pipeline_name: str) -> StateInfo | None:
         state_collection = self.make_qualified_collection_name(self.schema.state_table_name)
         loads_collection = self.make_qualified_collection_name(self.schema.loads_table_name)
@@ -346,8 +333,6 @@ class TypesenseClient(JobClientBase, WithStateSync):
                     self._ts.collections[loads_collection].documents[str(load_id)].retrieve()
                 except ObjectNotFound:
                     continue
-                except TYPESENSE_ERRORS as exc:
-                    raise map_typesense_error(exc, "get document") from exc
                 return StateInfo.from_normalized_mapping(state, self.schema.naming)
             if len(documents) < page_size:
                 return None

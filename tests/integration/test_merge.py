@@ -6,8 +6,8 @@ import dlt
 import pytest
 from dlt.common.destination.exceptions import DestinationCapabilitiesException
 from dlt.pipeline.exceptions import PipelineStepFailed
+from typesense.sync.documents import Documents
 
-from dlt_typesense import load_jobs as _lj
 from dlt_typesense.exceptions import TypesenseTransientError
 from dlt_typesense.load_jobs import merge_document_id
 
@@ -186,17 +186,19 @@ def test_mixed_insert_and_update_batch(make_pipeline, documents) -> None:
 
 
 def test_merge_retry_converges(make_pipeline, documents, monkeypatch) -> None:
-    original = _lj.import_documents
+    original = Documents.import_
     state = {"failed": False}
 
-    def flaky(ts, collection, docs, **kwargs):
+    def flaky(self, documents, import_parameters=None, batch_size=None):
         if not state["failed"]:
             state["failed"] = True
-            list(docs)  # consume to simulate a partial mid-import interruption
+            # Consume to simulate a partial mid-import interruption.
+            if not isinstance(documents, (bytes, str)):
+                list(documents)
             raise TypesenseTransientError("simulated mid-import failure")
-        return original(ts, collection, docs, **kwargs)
+        return original(self, documents, import_parameters, batch_size)
 
-    monkeypatch.setattr(_lj, "import_documents", flaky)
+    monkeypatch.setattr(Documents, "import_", flaky)
 
     pipeline = make_pipeline()
 

@@ -5,10 +5,8 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import Iterable, Iterator, Sequence
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
-import typesense
 from dlt.common.destination.client import HasFollowupJobs, RunnableLoadJob
 from dlt.common.destination.utils import resolve_merge_strategy
 from dlt.common.json import json as dlt_json
@@ -43,25 +41,6 @@ def _user_columns(names: Sequence[str]) -> list[str]:
     return [name for name in names if not name.startswith("_dlt")]
 
 
-@dataclass
-class ImportSummary:
-    """Outcome of a chunked bulk import (counts + bounded failure samples)."""
-
-    total_count: int = 0
-    failed_count: int = 0
-    first_errors: list[str] = field(default_factory=list)
-
-    def add_failure(self, line: dict[str, Any]) -> None:
-        self.failed_count += 1
-        if len(self.first_errors) < _MAX_ERROR_SAMPLES:
-            error = line.get("error", "unknown error")
-            document = line.get("document")
-            sample = f"{error}"
-            if document is not None:
-                sample = f"{error} | document: {str(document)[:ERROR_DETAIL_MAX_LEN]}"
-            self.first_errors.append(sample[:ERROR_DETAIL_MAX_LEN])
-
-
 def _chunked(items: Iterable[Any], size: int) -> Iterator[list[Any]]:
     chunk: list[Any] = []
     for item in items:
@@ -71,37 +50,6 @@ def _chunked(items: Iterable[Any], size: int) -> Iterator[list[Any]]:
             chunk = []
     if chunk:
         yield chunk
-
-
-def import_documents(
-    ts: typesense.Client,
-    collection_name: str,
-    documents: Iterable[dict[str, Any]],
-    *,
-    action: str = "upsert",
-    client_batch_size: int = 1000,
-    server_batch_size: int = 40,
-) -> ImportSummary:
-    """Import ``documents`` in client-sized chunks; per-line failures accumulate.
-
-    Typesense returns HTTP 200 even when individual documents fail, so the
-    per-line results parsed by the SDK feed the summary instead of raising.
-    """
-    summary = ImportSummary()
-    # `batch_size` here is the server-side import<->search interleave knob (a
-    # query param), not the SDK's own client-side list slicer.
-    params = {"action": action, "batch_size": server_batch_size}
-    docs_api = ts.collections[collection_name].documents
-    for chunk in _chunked(documents, client_batch_size):
-        try:
-            results = docs_api.import_(chunk, cast("Any", params))
-        except TYPESENSE_ERRORS as exc:
-            raise map_typesense_error(exc, "document import") from exc
-        for line in results:
-            summary.total_count += 1
-            if not line.get("success", False):
-                summary.add_failure(cast("dict[str, Any]", line))
-    return summary
 
 
 def merge_document_id(collection_name: str, key_values: Sequence[Any]) -> str:
@@ -141,23 +89,45 @@ class TypesenseLoadJob(RunnableLoadJob, HasFollowupJobs):
         ts = self._client.ts
         assert ts is not None, "Typesense client must be open while a job runs"
 
-        with FileStorage.open_zipsafe_ro(self._file_path) as f:
-            summary = import_documents(
-                ts,
-                self._collection_name,
-                self._iter_documents(f, id_fields, json_fields),
-                action=config.import_action,
-                client_batch_size=config.client_batch_size,
-                server_batch_size=config.server_batch_size,
-            )
+        # `batch_size` here is the server-side import↔search interleave knob (a
+        # query param), not the SDK's own client-side list slicer. We stream
+        # client-sized chunks ourselves so a 64 MB JSONL file is never fully
+        # materialized (the SDK's import_ requires a list and raises on empty).
+        params = {"action": config.import_action, "batch_size": config.server_batch_size}
+        docs_api = ts.collections[self._collection_name].documents
+        total_count = 0
+        failed_count = 0
+        first_errors: list[str] = []
 
-        if summary.failed_count:
+        with FileStorage.open_zipsafe_ro(self._file_path) as f:
+            for chunk in _chunked(
+                self._iter_documents(f, id_fields, json_fields), config.client_batch_size
+            ):
+                try:
+                    results = docs_api.import_(chunk, cast("Any", params))
+                except TYPESENSE_ERRORS as exc:
+                    raise map_typesense_error(exc, "document import") from exc
+                for line in results:
+                    total_count += 1
+                    if line.get("success", False):
+                        continue
+                    failed_count += 1
+                    if len(first_errors) >= _MAX_ERROR_SAMPLES:
+                        continue
+                    error = line.get("error", "unknown error")
+                    document = line.get("document")
+                    sample = f"{error}"
+                    if document is not None:
+                        sample = f"{error} | document: {str(document)[:ERROR_DETAIL_MAX_LEN]}"
+                    first_errors.append(sample[:ERROR_DETAIL_MAX_LEN])
+
+        if failed_count:
             raise TypesensePartialImportError(
-                f"{summary.failed_count} of {summary.total_count} documents failed to import "
+                f"{failed_count} of {total_count} documents failed to import "
                 f"into collection '{self._collection_name}' (load {self._load_id}). "
-                f"First errors: {summary.first_errors}",
-                failed_count=summary.failed_count,
-                total_count=summary.total_count,
+                f"First errors: {first_errors}",
+                failed_count=failed_count,
+                total_count=total_count,
             )
 
     def _iter_documents(

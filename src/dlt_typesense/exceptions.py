@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from functools import wraps
+from typing import Any
+
 import httpx
 from dlt.common.destination.exceptions import (
     DestinationTerminalException,
     DestinationTransientException,
 )
+from dlt.common.typing import TFun
 from typesense.exceptions import TypesenseClientError
 
 # The typesense SDK re-raises raw httpx errors after its retry loop, so both
@@ -55,3 +59,16 @@ def map_typesense_error(
     if status in _TERMINAL_STATUSES:
         return TypesenseImportError(message)
     return TypesenseTransientError(message)
+
+
+def wrap_typesense_error(f: TFun) -> TFun:
+    """Map SDK/httpx errors to dlt's terminal/transient taxonomy (Weaviate pattern)."""
+
+    @wraps(f)
+    def _wrap(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return f(*args, **kwargs)
+        except TYPESENSE_ERRORS as exc:
+            raise map_typesense_error(exc, f.__name__) from exc
+
+    return _wrap  # type: ignore[return-value]
