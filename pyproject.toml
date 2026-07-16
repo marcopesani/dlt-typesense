@@ -1,6 +1,6 @@
 [project]
 name = "dlt-typesense"
-version = "0.0.1"
+dynamic = ["version"]
 description = "Typesense document destination for dlt (data load tool)"
 readme = "README.md"
 authors = [
@@ -49,8 +49,28 @@ dev = [
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/dlt_typesense/__init__.py"
+
+[tool.hatch.build.targets.sdist]
+only-include = [
+    "src/dlt_typesense",
+    "tests",
+    "examples",
+    "docs",
+    "LICENSE",
+    "README.md",
+    "pyproject.toml",
+    "uv.lock",
+    ".python-version",
+    "docker-compose.yml",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "CODE_OF_CONDUCT.md",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/dlt_typesense"]

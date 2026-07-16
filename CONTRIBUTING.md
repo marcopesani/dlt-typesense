@@ -68,6 +68,13 @@ Git adds a `Signed-off-by: Your Name <email>` trailer. Your sign-off certifies y
 - Ruff for lint/format; basedpyright for types
 - No secrets in the repo (use `.dlt/secrets.toml` locally; it is gitignored)
 
+## Releasing to PyPI
+
+Maintainers: bump `__version__` in `src/dlt_typesense/__init__.py`, merge to `main`,
+then publish a GitHub Release tagged `vX.Y.Z` matching that version. See
+[docs/github-setup.md](docs/github-setup.md#pypi-publishing-trusted-publisher) for
+Trusted Publisher setup and the publish workflow.
+
 ## Reporting security issues
 
 See [SECURITY.md](SECURITY.md).
