@@ -27,17 +27,16 @@ def _system_collections(client: TypesenseClient) -> list[str]:
 
 
 def test_initialize_storage_creates_system_collections_idempotently(
-    make_pipeline, open_client
+    make_pipeline, open_client, probe, collection_exists
 ) -> None:
     pipeline = make_pipeline()
     _establish_schema(pipeline)
     with open_client(pipeline) as client:
         client.initialize_storage()
         for collection in _system_collections(client):
-            assert client.rest.collection_exists(collection)
+            assert collection_exists(collection)
         version_collection = client.make_qualified_collection_name(client.schema.version_table_name)
-        client.rest.upsert_document(
-            version_collection,
+        probe.collections[version_collection].documents.upsert(
             {
                 "id": "sentinel",
                 "version": 1,
@@ -46,12 +45,12 @@ def test_initialize_storage_creates_system_collections_idempotently(
                 "version_hash": "h",
                 "inserted_at": "2020-01-01T00:00:00+00:00",
                 "schema": "{}",
-            },
+            }
         )
         client.initialize_storage()  # second run must not error or lose data
         for collection in _system_collections(client):
-            assert client.rest.collection_exists(collection)
-        assert client.rest.get_document(version_collection, "sentinel") is not None
+            assert collection_exists(collection)
+        assert probe.collections[version_collection].documents["sentinel"].retrieve() is not None
 
 
 def test_is_storage_initialized_transitions(make_pipeline, open_client) -> None:
@@ -64,7 +63,7 @@ def test_is_storage_initialized_transitions(make_pipeline, open_client) -> None:
 
 
 def test_truncate_tables_empties_only_listed(
-    make_pipeline, open_client, probe, count_documents
+    make_pipeline, open_client, collection_exists, count_documents
 ) -> None:
     pipeline = make_pipeline()
 
@@ -85,12 +84,12 @@ def test_truncate_tables_empties_only_listed(
     with open_client(pipeline) as client:
         client.initialize_storage(truncate_tables=["a"])
     assert count_documents(coll_a) == 0  # emptied
-    assert probe.collection_exists(coll_a)  # but still exists
+    assert collection_exists(coll_a)  # but still exists
     assert count_documents(coll_b) == 5  # untouched
 
 
 def test_drop_storage_removes_everything_and_allows_restart(
-    make_pipeline, open_client, count_documents
+    make_pipeline, open_client, count_documents, collection_exists
 ) -> None:
     pipeline = make_pipeline()
 
@@ -106,8 +105,8 @@ def test_drop_storage_removes_everything_and_allows_restart(
         client.drop_storage()
         assert client.is_storage_initialized() is False
         for system_collection in _system_collections(client):
-            assert not client.rest.collection_exists(system_collection)
-        assert not client.rest.collection_exists(collection)
+            assert not collection_exists(system_collection)
+        assert not collection_exists(collection)
 
     info = pipeline.run(items())
     assert not info.has_failed_jobs
@@ -115,24 +114,24 @@ def test_drop_storage_removes_everything_and_allows_restart(
 
 
 def test_update_stored_schema_creates_tables_and_noops_on_unchanged_hash(
-    make_pipeline, open_client
+    make_pipeline, open_client, collection_exists, documents
 ) -> None:
     pipeline = make_pipeline()
     _establish_schema(pipeline, table="products")
     with open_client(pipeline) as client:
         client.initialize_storage()
         client.update_stored_schema()
-        assert client.rest.collection_exists(client.make_qualified_collection_name("products"))
+        assert collection_exists(client.make_qualified_collection_name("products"))
         stored = client.get_stored_schema_by_hash(client.schema.stored_version_hash)
         assert stored is not None
         assert stored.version_hash == client.schema.stored_version_hash
 
         version_collection = client.make_qualified_collection_name(client.schema.version_table_name)
-        before_docs = client.rest.search_documents(version_collection, per_page=250)
+        before_docs = documents(version_collection)
         assert len(before_docs) == 1
         inserted_before = before_docs[0]["inserted_at"]
         client.update_stored_schema()  # unchanged hash -> genuinely no write
-        after_docs = client.rest.search_documents(version_collection, per_page=250)
+        after_docs = documents(version_collection)
         assert len(after_docs) == 1
         assert after_docs[0]["inserted_at"] == inserted_before
 
@@ -158,7 +157,7 @@ def test_dataset_qualification_and_isolation(make_pipeline, open_client, count_d
     assert count_documents("warehouse_products") == 0
 
 
-def test_complete_load_records_load_id(make_pipeline, open_client) -> None:
+def test_complete_load_records_load_id(make_pipeline, open_client, probe) -> None:
     pipeline = make_pipeline()
 
     @dlt.resource(name="items", write_disposition="append")
@@ -169,7 +168,7 @@ def test_complete_load_records_load_id(make_pipeline, open_client) -> None:
     load_id = info.loads_ids[0]
     with open_client(pipeline) as client:
         loads_collection = client.make_qualified_collection_name(client.schema.loads_table_name)
-        doc = client.rest.get_document(loads_collection, load_id)
+        doc = probe.collections[loads_collection].documents[load_id].retrieve()
         assert doc is not None
         n = client.schema.naming.normalize_identifier
         assert doc[n("load_id")] == load_id

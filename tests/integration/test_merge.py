@@ -7,7 +7,7 @@ import pytest
 from dlt.common.destination.exceptions import DestinationCapabilitiesException
 from dlt.pipeline.exceptions import PipelineStepFailed
 
-from dlt_typesense import rest_client as _rc
+from dlt_typesense import load_jobs as _lj
 from dlt_typesense.exceptions import TypesenseTransientError
 from dlt_typesense.load_jobs import merge_document_id
 
@@ -20,7 +20,7 @@ def _one(collection_documents: list[dict], **match) -> dict:
     return hits[0]
 
 
-def test_unsupported_strategy_fails_writing_nothing(make_pipeline, probe) -> None:
+def test_unsupported_strategy_fails_writing_nothing(make_pipeline, collection_exists) -> None:
     pipeline = make_pipeline()
 
     @dlt.resource(
@@ -40,7 +40,7 @@ def test_unsupported_strategy_fails_writing_nothing(make_pipeline, probe) -> Non
     message = str(cause)
     assert "delete-insert" in message
     assert "upsert" in message and "insert-only" in message
-    assert not probe.collection_exists(make_pipeline.qualified_name(pipeline, "products"))
+    assert not collection_exists(make_pipeline.qualified_name(pipeline, "products"))
 
 
 def test_deterministic_id_from_primary_key(make_pipeline, documents) -> None:
@@ -186,17 +186,17 @@ def test_mixed_insert_and_update_batch(make_pipeline, documents) -> None:
 
 
 def test_merge_retry_converges(make_pipeline, documents, monkeypatch) -> None:
-    original = _rc.TypesenseRestClient.import_documents
+    original = _lj.import_documents
     state = {"failed": False}
 
-    def flaky(self, collection, docs, **kwargs):
+    def flaky(ts, collection, docs, **kwargs):
         if not state["failed"]:
             state["failed"] = True
             list(docs)  # consume to simulate a partial mid-import interruption
             raise TypesenseTransientError("simulated mid-import failure")
-        return original(self, collection, docs, **kwargs)
+        return original(ts, collection, docs, **kwargs)
 
-    monkeypatch.setattr(_rc.TypesenseRestClient, "import_documents", flaky)
+    monkeypatch.setattr(_lj, "import_documents", flaky)
 
     pipeline = make_pipeline()
 
@@ -230,8 +230,9 @@ def test_insert_only_never_modifies_and_retry_idempotent(make_pipeline, document
     for doc in docs:
         assert doc["id"] == doc["_dlt_id"]  # keyed by _dlt_id (append path)
 
-    probe.import_documents(collection, docs, action="upsert")
-    assert probe.count_documents(collection) == 3
+    probe.collections[collection].documents.import_(docs, {"action": "upsert"})
+    found = probe.collections[collection].documents.search({"q": "*", "per_page": 0})["found"]
+    assert found == 3
 
 
 def test_merge_leaves_stale_child_documents(make_pipeline, count_documents) -> None:

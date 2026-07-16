@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
-from dlt_typesense.exceptions import TypesensePartialImportError
+from dlt_typesense.exceptions import TypesenseImportError, TypesensePartialImportError
 from dlt_typesense.load_jobs import TypesenseLoadJob
-from dlt_typesense.rest_client import ImportSummary
 
 
 class _FakeConfig:
@@ -17,52 +18,56 @@ class _FakeConfig:
     import_action = "upsert"
 
 
-def test_create_action_is_rejected(tmp_path) -> None:
-    from dlt_typesense.exceptions import TypesenseImportError
+class _FakeTs:
+    """Stands in for typesense.Client: supports ts.collections[name].documents.import_()."""
 
-    file_path = tmp_path / "rows.abc.0.jsonl"
-    file_path.write_text(json.dumps({"_dlt_id": "r1"}) + "\n")
-    job = TypesenseLoadJob(str(file_path), "c")
-    config = _FakeConfig()
-    config.import_action = "create"  # type: ignore[misc]
-    job._job_client = _FakeClient(_FakeRest(ImportSummary()))  # type: ignore[assignment]
-    job._job_client.config = config  # type: ignore[attr-defined]
-    job._load_table = {"name": "rows", "write_disposition": "append", "columns": {}}
-    job._load_id = "1"
-    with pytest.raises(TypesenseImportError):
-        job.run()
+    def __init__(self, respond=None) -> None:
+        self.calls: list[tuple[str, list[dict[str, Any]], dict[str, Any]]] = []
+        self._respond = respond or (lambda chunk: [{"success": True} for _ in chunk])
+        self.collections = self  # ts.collections[name] resolves via __getitem__ below
 
+    def __getitem__(self, name: str):
+        def _import(documents, params):
+            chunk = list(documents)
+            self.calls.append((name, chunk, dict(params)))
+            return self._respond(chunk)
 
-class _FakeRest:
-    def __init__(self, summary: ImportSummary) -> None:
-        self._summary = summary
-        self.calls: list[str] = []
-        self.last_kwargs: dict = {}
-
-    def import_documents(self, collection_name, documents, **kwargs) -> ImportSummary:
-        list(documents)
-        self.calls.append(collection_name)
-        self.last_kwargs = kwargs
-        return self._summary
+        return SimpleNamespace(documents=SimpleNamespace(import_=_import))
 
 
 class _FakeClient:
-    def __init__(self, rest: _FakeRest) -> None:
+    def __init__(self, ts: _FakeTs) -> None:
         self.config = _FakeConfig()
-        self.rest = rest
+        self.ts = ts
+
+
+def _make_job(tmp_path, collection: str, ts: _FakeTs, load_id: str = "1") -> TypesenseLoadJob:
+    file_path = tmp_path / "rows.abc123.0.jsonl"
+    file_path.write_text(json.dumps({"_dlt_id": "r1", "v": 1}) + "\n")
+    job = TypesenseLoadJob(str(file_path), collection)
+    job._job_client = _FakeClient(ts)  # type: ignore[assignment]
+    job._load_table = {"name": "rows", "write_disposition": "append", "columns": {}}
+    job._load_id = load_id
+    return job
+
+
+def test_create_action_is_rejected(tmp_path) -> None:
+    ts = _FakeTs()
+    job = _make_job(tmp_path, "c", ts)
+    job._job_client.config.import_action = "create"  # type: ignore[attr-defined]
+    with pytest.raises(TypesenseImportError):
+        job.run()
+    assert ts.calls == []
 
 
 def test_partial_import_error_is_diagnosable(tmp_path) -> None:
-    file_path = tmp_path / "rows.abc123.0.jsonl"
-    file_path.write_text(json.dumps({"_dlt_id": "r1", "v": 1}) + "\n")
+    def respond(chunk):
+        return [
+            {"success": False, "error": "Field `v` type mismatch", "document": '{"v":1}'}
+            for _ in chunk
+        ]
 
-    summary = ImportSummary(total_count=1)
-    summary.add_failure({"error": "Field `v` type mismatch", "document": '{"v":1}'})
-
-    job = TypesenseLoadJob(str(file_path), "catalog_rows")
-    job._job_client = _FakeClient(_FakeRest(summary))  # type: ignore[assignment]
-    job._load_table = {"name": "rows", "write_disposition": "append", "columns": {}}
-    job._load_id = "1700000000.42"
+    job = _make_job(tmp_path, "catalog_rows", _FakeTs(respond), load_id="1700000000.42")
 
     with pytest.raises(TypesensePartialImportError) as excinfo:
         job.run()
@@ -75,20 +80,13 @@ def test_partial_import_error_is_diagnosable(tmp_path) -> None:
     assert "type mismatch" in message
 
 
-def test_config_server_batch_size_reaches_rest(tmp_path) -> None:
-    file_path = tmp_path / "rows.abc.0.jsonl"
-    file_path.write_text(json.dumps({"_dlt_id": "r1", "v": 1}) + "\n")
-    config = _FakeConfig()
-    config.server_batch_size = 17  # type: ignore[misc]
-    config.client_batch_size = 500  # type: ignore[misc]
-    rest = _FakeRest(ImportSummary())
-    job = TypesenseLoadJob(str(file_path), "c")
-    client = _FakeClient(rest)
-    client.config = config  # type: ignore[attr-defined]
-    job._job_client = client  # type: ignore[assignment]
-    job._load_table = {"name": "rows", "write_disposition": "append", "columns": {}}
-    job._load_id = "1"
+def test_config_batch_settings_reach_the_import(tmp_path) -> None:
+    ts = _FakeTs()
+    job = _make_job(tmp_path, "c", ts)
+    job._job_client.config.server_batch_size = 17  # type: ignore[attr-defined]
+    job._job_client.config.client_batch_size = 500  # type: ignore[attr-defined]
     job.run()
-    assert rest.last_kwargs.get("server_batch_size") == 17
-    assert rest.last_kwargs.get("client_batch_size") == 500
-    assert rest.last_kwargs.get("action") == "upsert"
+    collection, chunk, params = ts.calls[0]
+    assert collection == "c"
+    assert len(chunk) == 1
+    assert params == {"action": "upsert", "batch_size": 17}
