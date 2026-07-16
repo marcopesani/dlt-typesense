@@ -5,6 +5,8 @@ from __future__ import annotations
 import dataclasses
 from typing import Annotated, Final
 
+import httpx
+import typesense
 from dlt.common.configuration import NotResolved, configspec
 from dlt.common.configuration.specs.base_configuration import CredentialsConfiguration
 from dlt.common.destination.client import (
@@ -14,6 +16,9 @@ from dlt.common.destination.client import (
 from dlt.common.destination.exceptions import DestinationCapabilitiesException
 from dlt.common.typing import TSecretStrValue
 from dlt.common.utils import digest128
+from typesense.exceptions import ConfigError
+
+from dlt_typesense.exceptions import TypesenseImportError
 
 
 @configspec
@@ -29,6 +34,31 @@ class TypesenseCredentials(CredentialsConfiguration):
 
     connection_timeout_seconds: float = 5.0
     """Client connection timeout in seconds."""
+
+    def get_client(self, *, read_timeout_seconds: float = 180.0) -> typesense.Client:
+        """Build an official Typesense client for these credentials."""
+        try:
+            return typesense.Client(
+                {
+                    "nodes": [{"host": self.host, "port": self.port, "protocol": self.protocol}],
+                    "api_key": self.api_key,
+                    # The SDK passes this value verbatim to httpx.Client(timeout=...),
+                    # so an httpx.Timeout preserves the connect/read split: fast
+                    # failure on dead hosts, long reads for large imports.
+                    "connection_timeout_seconds": httpx.Timeout(  # type: ignore[typeddict-item]
+                        connect=self.connection_timeout_seconds,
+                        read=read_timeout_seconds,
+                        write=read_timeout_seconds,
+                        pool=self.connection_timeout_seconds,
+                    ),
+                    # Retries stay with dlt's load engine (whole-job retry, restricted
+                    # to idempotent upsert/emplace actions); the SDK must fail fast so
+                    # transient errors bubble immediately.
+                    "num_retries": 0,
+                }
+            )
+        except ConfigError as exc:
+            raise TypesenseImportError(f"Invalid Typesense configuration: {exc}") from exc
 
 
 @configspec

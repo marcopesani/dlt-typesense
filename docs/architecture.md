@@ -35,14 +35,18 @@ Secondary references:
 
 ```
 factory.py           → Destination entry + capabilities
-configuration.py     → credentials + batch/timeout knobs
+configuration.py     → credentials + batch/timeout knobs + official client factory
 typesense_client.py  → storage init, schema update, state sync, create_load_job
-load_jobs.py         → TypesenseLoadJob (RemoveOrphansJob stub raises)
-rest_client.py       → streaming HTTP import / collection CRUD
+load_jobs.py         → TypesenseLoadJob + chunked import over the official client
 type_mapper.py       → collection schema build (typed pinned fields + `.*` auto)
 typesense_adapter.py → per-field + collection-level schema hints
-exceptions.py        → terminal vs transient import errors
+exceptions.py        → terminal vs transient error taxonomy + SDK error mapping
 ```
+
+All Typesense I/O goes through the official [`typesense`](https://pypi.org/project/typesense/)
+client directly. Its built-in retries are disabled (`num_retries=0`): retry
+ownership stays with dlt's whole-job load retry, which is why the import
+action is restricted to idempotent `upsert`/`emplace`.
 
 ## Schema hints
 

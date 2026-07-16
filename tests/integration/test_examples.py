@@ -9,8 +9,6 @@ import sys
 
 import pytest
 
-from dlt_typesense.rest_client import TypesenseRestClient
-
 pytestmark = pytest.mark.integration
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -18,11 +16,14 @@ EXAMPLES_DIR = REPO_ROOT / "examples"
 
 
 def _drop_dataset(credentials, dataset: str) -> None:
-    with TypesenseRestClient(credentials) as client:
+    client = credentials.get_client()
+    try:
         prefix = f"{dataset}_"
-        for collection in client.list_collections():
+        for collection in client.collections.retrieve():
             if collection["name"].startswith(prefix):
-                client.delete_collection(collection["name"])
+                client.collections[collection["name"]].delete()
+    finally:
+        client.api_call.close()
 
 
 def _run_example(name: str, env: dict, cwd: pathlib.Path) -> None:

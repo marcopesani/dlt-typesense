@@ -36,7 +36,7 @@ def test_append_accumulates_across_runs(make_pipeline, count_documents) -> None:
     assert count_documents(make_pipeline.qualified_name(pipeline, "events")) == 6
 
 
-def test_whole_file_retry_is_idempotent(make_pipeline, documents, probe) -> None:
+def test_whole_file_retry_is_idempotent(make_pipeline, documents, probe, count_documents) -> None:
     pipeline = make_pipeline()
 
     @dlt.resource(name="events", write_disposition="append")
@@ -48,8 +48,8 @@ def test_whole_file_retry_is_idempotent(make_pipeline, documents, probe) -> None
     loaded = documents(collection)
     assert len(loaded) == 5
 
-    probe.import_documents(collection, loaded, action="upsert")
-    assert probe.count_documents(collection) == 5  # no duplicates
+    probe.collections[collection].documents.import_(loaded, {"action": "upsert"})
+    assert count_documents(collection) == 5  # no duplicates
 
 
 def test_append_across_schema_evolution(make_pipeline, documents) -> None:
@@ -111,7 +111,7 @@ def test_replace_survives_schema_change(make_pipeline, documents) -> None:
     assert docs[0].get("changes") == "now-text" or docs[0].get("changes__v_text") == "now-text"
 
 
-def test_replace_zero_rows_truncates(make_pipeline, count_documents, probe) -> None:
+def test_replace_zero_rows_truncates(make_pipeline, count_documents, collection_exists) -> None:
     pipeline = make_pipeline()
 
     @dlt.resource(name="snapshot", write_disposition="replace")
@@ -129,7 +129,7 @@ def test_replace_zero_rows_truncates(make_pipeline, count_documents, probe) -> N
 
     pipeline.run(snapshot_empty())
     assert count_documents(collection) == 0  # emptied but exists
-    assert probe.collection_exists(collection)
+    assert collection_exists(collection)
 
 
 def test_replace_replaces_child_tables(make_pipeline, count_documents) -> None:
@@ -159,7 +159,7 @@ def test_replace_replaces_child_tables(make_pipeline, count_documents) -> None:
 # a row-less skip resource is the loadable case.
 
 
-def test_skip_writes_nothing(make_pipeline, probe) -> None:
+def test_skip_writes_nothing(make_pipeline, collection_exists) -> None:
     pipeline = make_pipeline()
 
     @dlt.resource(name="ignored", write_disposition="skip")
@@ -169,10 +169,10 @@ def test_skip_writes_nothing(make_pipeline, probe) -> None:
 
     info = pipeline.run(ignored())
     assert not info.has_failed_jobs
-    assert not probe.collection_exists(make_pipeline.qualified_name(pipeline, "ignored"))
+    assert not collection_exists(make_pipeline.qualified_name(pipeline, "ignored"))
 
 
-def test_skip_does_not_affect_siblings(make_pipeline, count_documents, probe) -> None:
+def test_skip_does_not_affect_siblings(make_pipeline, count_documents, collection_exists) -> None:
     pipeline = make_pipeline()
 
     @dlt.resource(name="ignored", write_disposition="skip")
@@ -187,4 +187,4 @@ def test_skip_does_not_affect_siblings(make_pipeline, count_documents, probe) ->
     info = pipeline.run([ignored(), kept()])
     assert not info.has_failed_jobs
     assert count_documents(make_pipeline.qualified_name(pipeline, "kept")) == 2
-    assert not probe.collection_exists(make_pipeline.qualified_name(pipeline, "ignored"))
+    assert not collection_exists(make_pipeline.qualified_name(pipeline, "ignored"))

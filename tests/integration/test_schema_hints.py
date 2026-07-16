@@ -10,8 +10,12 @@ from dlt_typesense import typesense_adapter
 pytestmark = pytest.mark.integration
 
 
+def retrieve_schema(probe, collection_name: str) -> dict:
+    return probe.collections[collection_name].retrieve()
+
+
 def field_map(probe, collection_name: str) -> dict[str, dict]:
-    schema = probe.retrieve_collection(collection_name)
+    schema = retrieve_schema(probe, collection_name)
     return {field["name"]: field for field in schema["fields"]}
 
 
@@ -44,7 +48,7 @@ def test_default_sorting_field_end_to_end(make_pipeline, probe, documents) -> No
     pipeline.run(typesense_adapter(ranked(), collection_hints={"default_sorting_field": "rank"}))
 
     collection = make_pipeline.qualified_name(pipeline, "ranked")
-    schema = probe.retrieve_collection(collection)
+    schema = retrieve_schema(probe, collection)
     assert schema["default_sorting_field"] == "rank"
     fields = {field["name"]: field for field in schema["fields"]}
     assert fields["rank"]["optional"] is False
@@ -70,10 +74,7 @@ def test_vector_field_round_trip(make_pipeline, probe, documents) -> None:
     assert fields["embedding"]["type"] == "float[]"
     assert fields["embedding"]["num_dim"] == 3
 
-    # Search responses exclude vector fields by default; fetch the raw document.
-    hit = next(d for d in documents(collection) if d["doc"] == "a")
-    doc = probe.get_document(collection, hit["id"])
-    assert doc is not None
+    doc = next(d for d in documents(collection) if d["doc"] == "a")
     assert isinstance(doc["embedding"], list)
     assert doc["embedding"] == pytest.approx([0.1, 0.2, 0.3])
 
@@ -96,7 +97,7 @@ def test_collection_level_params_applied(make_pipeline, probe) -> None:
         )
     )
 
-    schema = probe.retrieve_collection(make_pipeline.qualified_name(pipeline, "notes"))
+    schema = retrieve_schema(probe, make_pipeline.qualified_name(pipeline, "notes"))
     assert schema["token_separators"] == ["-"]
     assert schema["symbols_to_index"] == ["+"]
     assert schema["metadata"] == {"team": "search"}
