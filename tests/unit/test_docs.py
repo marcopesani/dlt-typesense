@@ -28,6 +28,11 @@ README = (REPO_ROOT / "README.md").read_text().lower()
         "orphan",
         "__id",
         "base64",
+        "typesense_adapter",
+        "field_hints",
+        "collection_hints",
+        "default_sorting_field",
+        "facet",
     ],
 )
 def test_readme_documents_contract(phrase: str) -> None:

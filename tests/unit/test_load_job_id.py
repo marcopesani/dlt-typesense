@@ -82,6 +82,53 @@ def test_json_fields_detected_from_schema() -> None:
     assert TypesenseLoadJob._json_fields(table) == ["payload"]
 
 
+def test_json_fields_skip_non_string_type_overrides() -> None:
+    # A json column pinned to a Typesense type expecting a native JSON value
+    # (float[] vector, string[], object) must keep that value; only plain and
+    # string-typed json columns are stringified.
+    table = {
+        "name": "t",
+        "columns": {
+            "payload": {"name": "payload", "data_type": "json"},
+            "note": {
+                "name": "note",
+                "data_type": "json",
+                "x-typesense-field": {"type": "string"},
+            },
+            "embedding": {
+                "name": "embedding",
+                "data_type": "json",
+                "x-typesense-field": {"type": "float[]", "num_dim": 3},
+            },
+            "tags": {
+                "name": "tags",
+                "data_type": "json",
+                "x-typesense-field": {"type": "string[]"},
+            },
+            "attrs": {
+                "name": "attrs",
+                "data_type": "json",
+                "x-typesense-field": {"type": "object"},
+            },
+        },
+    }
+    assert TypesenseLoadJob._json_fields(table) == ["payload", "note"]
+
+
+def test_json_fields_hint_without_type_still_stringified() -> None:
+    table = {
+        "name": "t",
+        "columns": {
+            "payload": {
+                "name": "payload",
+                "data_type": "json",
+                "x-typesense-field": {"facet": True},
+            },
+        },
+    }
+    assert TypesenseLoadJob._json_fields(table) == ["payload"]
+
+
 def test_id_fields_append_returns_none() -> None:
     table = {"name": "events", "write_disposition": "append", "columns": {}}
     assert _job()._id_fields(table) is None

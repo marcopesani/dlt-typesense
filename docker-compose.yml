@@ -1,6 +1,6 @@
 services:
   typesense:
-    image: typesense/typesense:29.0 # typesense-py 2.0.0 requires server >= 28
+    image: typesense/typesense:30.2 # matches the documented schema-hints API surface
     ports:
       - "8108:8108"
     environment:

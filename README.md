@@ -61,6 +61,53 @@ pipeline.run(products())
 Runnable examples are in [`examples/`](examples/). Start a local server with
 `docker compose up -d` first.
 
+### Schema customization (`typesense_adapter`)
+
+By default collections use Typesense auto schema (a `.*` catch-all field).
+`typesense_adapter` pins explicit typed fields for hinted columns and sets
+collection-level options, covering the full
+[Typesense collections API](https://typesense.org/docs/30.2/api/collections.html)
+surface. Unhinted columns still fall through to `.*` auto, so schema evolution
+keeps working.
+
+```python
+from dlt_typesense import typesense, typesense_adapter
+
+pipeline.run(
+    typesense_adapter(
+        products,
+        facet="category",                      # shorthand for {"facet": True}
+        sort=["price", "rating"],              # shorthand for {"sort": True}
+        field_hints={
+            "description": {"locale": "de", "infix": True},
+            "embedding": {"type": "float[]", "num_dim": 384},   # vector field
+            "summary_vec": {                                    # auto-embedding
+                "type": "float[]",
+                "embed": {
+                    "from": ["title", "description"],
+                    "model_config": {"model_name": "ts/e5-small"},
+                },
+            },
+        },
+        collection_hints={
+            "default_sorting_field": "price",
+            "token_separators": ["-"],
+            "metadata": {"owner": "search-team"},
+        },
+    )
+)
+```
+
+- `field_hints` accepts, per column: `type`, `facet`, `index`, `optional`,
+  `sort`, `infix`, `locale`, `stem`, `stem_dictionary`, `num_dim`, `vec_dist`,
+  `reference`, `range_index`, `store`, `truncate_len`, `token_separators`,
+  `symbols_to_index`, `embed`.
+- `collection_hints` accepts: `default_sorting_field`, `token_separators`,
+  `symbols_to_index`, `enable_nested_fields`, `metadata`.
+- Unknown parameter names raise `ValueError` when the adapter is called; value
+  errors (e.g. a bad `locale` or `vec_dist`) surface as terminal errors from
+  the server at load time.
+
 ### Credentials
 
 Credentials resolve from `.dlt/secrets.toml` (or the matching
@@ -91,9 +138,28 @@ Passed to `typesense(...)` or resolved from config (`destination.typesense.*`):
 
 ## Behavior notes
 
-- **Auto collection schema.** Collections are created with Typesense auto
-  schema (`.*` field). Explicit typed field maps and `typesense_adapter`
-  facet/sort/index hints are not applied.
+- **Auto schema + pinned fields.** Collections are created with a `.*` auto
+  catch-all; columns hinted via `typesense_adapter` are pinned as explicit
+  typed fields ahead of it. Pinned types follow the wire format below unless
+  overridden with a `type` field hint.
+- **Hints apply at collection creation only.** First load, every `replace`
+  run, and dev-mode/full-refresh runs (re)create collections with the current
+  hints. Changing hints on an existing `append`/`merge` collection has no
+  effect until the collection is recreated (a log line notes this). There is
+  no schema PATCH/alter support yet.
+- **`default_sorting_field`** must resolve to a numeric (`int32`/`int64`/
+  `float`) non-optional field — the destination pins it, forces it
+  non-optional, and fails terminally otherwise. Note dlt `decimal`/`timestamp`
+  columns are stored as strings; use a `double`/`bigint` column or override
+  the field `type`. Rows with a null in that column fail at import.
+- **Vector/native fields.** An array or object `type` hint (`float[]`,
+  `string[]`, `object`, `geopoint`, …) marks the dlt column as `json` so lists
+  stay inline instead of becoming child collections, and the value is imported
+  as native JSON rather than a string — this is how `num_dim` vectors work
+  end-to-end. With `import_action="emplace"`, partial updates that omit a
+  non-optional pinned field are rejected by the server.
+- **Auto-embedding (`embed`) fields** make the server download the model at
+  collection creation — expect a slow first create.
 - **Child tables under merge.** Merge updates root documents in place. When
   nested-list items disappear from the source, orphaned child-table documents
   are not deleted. Root documents stay correct.

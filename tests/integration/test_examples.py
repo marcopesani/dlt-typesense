@@ -54,6 +54,8 @@ def test_examples_run_green(require_server, tmp_path) -> None:
     try:
         _run_example("append_replace_pipeline", env, tmp_path)
         _run_example("merge_pipeline", env, tmp_path)
+        _run_example("schema_hints_pipeline", env, tmp_path)
     finally:
         _drop_dataset(require_server, "demo")
         _drop_dataset(require_server, "catalog")
+        _drop_dataset(require_server, "library")
