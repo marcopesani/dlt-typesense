@@ -11,6 +11,9 @@ from dlt.common.destination.client import (
     DestinationClientConfiguration,
     DestinationClientDwhConfiguration,
 )
+from dlt.common.destination.exceptions import DestinationCapabilitiesException
+from dlt.common.typing import TSecretStrValue
+from dlt.common.utils import digest128
 
 
 @configspec
@@ -20,7 +23,8 @@ class TypesenseCredentials(CredentialsConfiguration):
     host: str = "localhost"
     port: int = 8108
     protocol: str = "http"
-    api_key: str = None  # type: ignore[assignment]
+    # TSecretStrValue keeps the key out of reprs/logs; missing key stays unresolved.
+    api_key: TSecretStrValue = None  # type: ignore[assignment]
     """Admin API key used for collection and document writes."""
 
     connection_timeout_seconds: float = 5.0
@@ -39,12 +43,11 @@ class TypesenseClientConfiguration(DestinationClientDwhConfiguration):
     dataset_separator: str = "_"
     """Separator between dataset name and table name in collection names."""
 
-    # Optional empty dataset allowed (same pattern as qdrant); base type is str.
+    # Optional empty dataset (qdrant pattern); base type is str.
     dataset_name: Annotated[str | None, NotResolved()] = dataclasses.field(  # type: ignore[assignment]
         default=None, init=False, repr=False, compare=False
     )
 
-    # Import / scale knobs (used by load jobs once implemented)
     client_batch_size: int = 1000
     """Number of documents per HTTP import request (client-side chunking)."""
 
@@ -60,10 +63,22 @@ class TypesenseClientConfiguration(DestinationClientDwhConfiguration):
     read_timeout_seconds: float = 180.0
     """Read timeout for long-running import requests."""
 
+    def on_resolved(self) -> None:
+        supported_replace = ["truncate-and-insert"]
+        if self.replace_strategy is not None and self.replace_strategy not in supported_replace:
+            raise DestinationCapabilitiesException(
+                f"replace_strategy='{self.replace_strategy}' is not supported by the Typesense "
+                f"destination (no staging dataset). Supported: {supported_replace}."
+            )
+        supported_actions = ["upsert", "emplace"]
+        if self.import_action not in supported_actions:
+            raise DestinationCapabilitiesException(
+                f"import_action='{self.import_action}' is not supported; use one of "
+                f"{supported_actions}. 'create' breaks dlt's whole-file retry idempotency."
+            )
+
     def fingerprint(self) -> str:
         """Return a stable fingerprint of the connection location."""
-        from dlt.common.utils import digest128
-
         creds = self.credentials
         if creds is None:
             return ""

@@ -41,6 +41,11 @@ dev = [
     "pytest>=8",
     "pytest-cov>=6",
     "ruff>=0.9",
+    # Real-source smoke tests (AC-SRC): sql_database over SQLite, filesystem over
+    # CSV/JSONL/Parquet. rest_api ships with dlt. dlt's filesystem read_csv uses pandas.
+    "sqlalchemy>=2",
+    "pyarrow>=15",
+    "pandas>=2",
 ]
 
 [build-system]
@@ -68,6 +73,9 @@ reportMissingTypeStubs = false
 reportIncompatibleVariableOverride = "none"
 reportIncompatibleMethodOverride = "none"
 reportPrivateImportUsage = "none"
+# dlt's schema TypedDicts mark nearly every key NotRequired; accessing well-known
+# keys (table["name"], table["columns"]) directly is the idiom dlt itself uses.
+reportTypedDictNotRequiredAccess = "none"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

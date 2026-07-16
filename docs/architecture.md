@@ -24,12 +24,12 @@ The package mirrors dlt’s **qdrant** destination:
 | Loads | `RunnableLoadJob` reading JSONL packages |
 | Format | Preferred loader format: `jsonl` |
 | Merge | Strategies: `upsert` (default, list-first), `insert-only` (lancedb precedent) |
-| Replace | Strategy: `truncate-and-insert` |
+| Replace | Strategy: `truncate-and-insert` (drop + recreate) |
 
 Secondary references:
 
 - **weaviate** — batch insert with per-object failure aggregation (Typesense import returns HTTP 200 with per-line errors)
-- **lancedb** — orphan follow-up jobs for nested child tables (phase 2)
+- **lancedb** — orphan follow-up jobs for nested child tables (not implemented here)
 
 ## Module map
 
@@ -37,10 +37,10 @@ Secondary references:
 factory.py           → Destination entry + capabilities
 configuration.py     → credentials + batch/timeout knobs
 typesense_client.py  → storage init, schema update, state sync, create_load_job
-load_jobs.py         → TypesenseLoadJob (+ RemoveOrphansJob stub)
+load_jobs.py         → TypesenseLoadJob (RemoveOrphansJob stub raises)
 rest_client.py       → streaming HTTP import / collection CRUD
-type_mapper.py       → auto-schema first; typed map later
-typesense_adapter.py → facet/sort/index hints
+type_mapper.py       → auto-schema collection create
+typesense_adapter.py → facet/sort/index hints (not wired)
 exceptions.py        → terminal vs transient import errors
 ```
 
@@ -49,24 +49,15 @@ exceptions.py        → terminal vs transient import errors
 | Disposition | Typesense mechanism | Document `id` | Import `action` |
 |-------------|---------------------|---------------|-----------------|
 | append | bulk JSONL import | `_dlt_id` | `upsert` |
-| replace | drop+recreate collection (later: alias-swap), then import | `_dlt_id` | `upsert` |
-| merge (`upsert`) | bulk import keyed on PK | uuid5 / hash of `primary_key` | `upsert` / `emplace` |
+| replace | drop + recreate collection, then import | `_dlt_id` | `upsert` |
+| merge (`upsert`) | bulk import keyed on PK | uuid5 of `primary_key` | `upsert` / `emplace` |
 | merge (`insert-only`) | bulk import, append code path | `_dlt_id` | `upsert` |
 
 Always prefer `upsert`/`emplace` over `create` so dlt’s whole-file retry is idempotent.
-
-The behavioral contract for all of the above lives in
-[acceptance-criteria.md](acceptance-criteria.md).
 
 ## Scale
 
 - Set `recommended_file_size` so large tables split into parallel load jobs
 - Stream JSONL in client-sized chunks; do not buffer entire files
 - Parse every import response line (HTTP 200 ≠ full success)
-- Replace via drop/recreate or alias-swap — not delete-by-filter over millions
-
-## v1 vs phase 2
-
-**v1:** root-level documents; auto collection schema; append / replace / merge upsert.
-
-**Phase 2:** typed field map + `typesense_adapter` hints; alias-swap replace; `TypesenseRemoveOrphansJob` for nested child tables.
+- Replace uses drop/recreate — not delete-by-filter over millions of rows

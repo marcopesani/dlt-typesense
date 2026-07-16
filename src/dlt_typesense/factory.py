@@ -27,6 +27,7 @@ class typesense(Destination[TypesenseClientConfiguration, "TypesenseClient"]):
         caps = DestinationCapabilitiesContext()
         caps.preferred_loader_file_format = "jsonl"
         caps.supported_loader_file_formats = ["jsonl"]
+        caps.naming_convention = "dlt_typesense.naming"
         caps.has_case_sensitive_identifiers = True
         caps.max_identifier_length = 255
         caps.max_column_identifier_length = 255
@@ -36,9 +37,8 @@ class typesense(Destination[TypesenseClientConfiguration, "TypesenseClient"]):
         caps.is_max_text_data_type_length_in_bytes = False
         caps.supports_ddl_transactions = False
         caps.supported_replace_strategies = ["truncate-and-insert"]
-        # "upsert" must stay first: dlt resolves it as the default merge strategy
+        # "upsert" first: dlt resolves the first entry as the default merge strategy.
         caps.supported_merge_strategies = ["upsert", "insert-only"]
-        # Encourage file sharding for multi-million-row loads
         caps.recommended_file_size = 64_000_000
         return caps
 
@@ -55,14 +55,6 @@ class typesense(Destination[TypesenseClientConfiguration, "TypesenseClient"]):
         environment: str | None = None,
         **kwargs: Any,
     ) -> None:
-        """Configure the Typesense destination for use in a pipeline.
-
-        Args:
-            credentials: Host/port/protocol/api_key or a credentials mapping.
-            destination_name: Optional name to differentiate config sections.
-            environment: Optional environment name for config resolution.
-            **kwargs: Additional destination configuration fields.
-        """
         super().__init__(
             credentials=credentials,
             destination_name=destination_name,

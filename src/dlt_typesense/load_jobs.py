@@ -2,56 +2,169 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import cast
+import json
+import uuid
+from collections.abc import Iterator, Sequence
+from typing import TYPE_CHECKING, Any
 
 from dlt.common.destination.client import HasFollowupJobs, RunnableLoadJob
-from dlt.common.destination.typing import PreparedTableSchema
-from dlt.common.schema.typing import TTableSchema
-from dlt.common.schema.utils import get_columns_names_with_prop
+from dlt.common.destination.utils import resolve_merge_strategy
+from dlt.common.json import json as dlt_json
+from dlt.common.schema.utils import get_columns_names_with_prop, is_nested_table
+from dlt.common.storages import FileStorage
+
+from dlt_typesense.exceptions import (
+    TypesenseImportError,
+    TypesensePartialImportError,
+)
+
+if TYPE_CHECKING:
+    from dlt_typesense.typesense_client import TypesenseClient
+
+# Fixed uuid5 namespace — must never change or merge ids stop matching.
+_ID_NAMESPACE = uuid.NAMESPACE_DNS
+
+# Typesense document primary key; source columns named `id` are renamed in naming.py.
+RESERVED_ID_FIELD = "id"
+
+# `create` is rejected: whole-file retry would fail on already-existing documents.
+_RETRY_SAFE_ACTIONS = ("upsert", "emplace")
+
+
+def _user_columns(names: Sequence[str]) -> list[str]:
+    """Drop dlt system columns (``_dlt_*``) from a hint-derived column list."""
+    return [name for name in names if not name.startswith("_dlt")]
+
+
+def merge_document_id(collection_name: str, key_values: Sequence[Any]) -> str:
+    """Deterministic Typesense document id for a merge/upsert row.
+
+    Key components are JSON-encoded so compound keys cannot collide ambiguously
+    (e.g. ``["a_b", "c"]`` vs ``["a", "b_c"]``).
+    """
+    key = json.dumps([str(value) for value in key_values])
+    return str(uuid.uuid5(_ID_NAMESPACE, f"{collection_name}:{key}"))
 
 
 class TypesenseLoadJob(RunnableLoadJob, HasFollowupJobs):
-    """Load one JSONL file into a Typesense collection.
+    """Load one JSONL file into a Typesense collection via streamed bulk import.
 
-    Disposition → id → action seams (to implement):
-
-    - append: id from `_dlt_id`, action=`upsert`
-    - replace: collection truncated by client; id from `_dlt_id`, action=`upsert`
-    - merge: id from primary_key (uuid5), action=`upsert`/`emplace`
-
-    Never use `action=create` — dlt retries whole files on transient failure.
+    - append / replace / merge(insert-only): ``id`` from ``_dlt_id``, ``action=upsert``
+    - merge (upsert): ``id`` = uuid5 of the primary/unique key, ``action=upsert``
     """
 
     def __init__(self, file_path: str, collection_name: str) -> None:
         super().__init__(file_path)
         self._collection_name = collection_name
 
+    @property
+    def _client(self) -> TypesenseClient:
+        return self._job_client  # type: ignore[return-value]
+
     def run(self) -> None:
-        """Stream the load file into Typesense via bulk import.
+        config = self._client.config
+        if config.import_action not in _RETRY_SAFE_ACTIONS:
+            raise TypesenseImportError(
+                f"import_action='{config.import_action}' is not supported; use one of "
+                f"{list(_RETRY_SAFE_ACTIONS)}. 'create' breaks dlt's whole-file retry idempotency."
+            )
+        id_fields = self._id_fields(self._load_table)
+        json_fields = self._json_fields(self._load_table)
+        rest = self._client.rest
+        assert rest is not None, "REST client must be open while a job runs"
 
-        Planned steps:
-        1. Read JSONL from ``self._file_path`` in client-sized chunks.
-        2. Assign each row a Typesense ``id`` from :meth:`_id_fields`.
-        3. POST `/collections/{c}/documents/import?action=upsert`.
-        4. Parse per-line JSONL response; raise terminal/transient errors.
-        """
-        raise NotImplementedError("TypesenseLoadJob.run is not implemented yet.")
+        with FileStorage.open_zipsafe_ro(self._file_path) as f:
+            summary = rest.import_documents(
+                self._collection_name,
+                self._iter_documents(f, id_fields, json_fields),
+                action=config.import_action,
+                client_batch_size=config.client_batch_size,
+                server_batch_size=config.server_batch_size,
+            )
 
-    def _id_fields(self, table: PreparedTableSchema) -> Sequence[str]:
-        """Return columns used to build the Typesense document ``id``."""
-        schema_table = cast(TTableSchema, table)
-        if table.get("write_disposition") == "merge":
-            primary_keys = get_columns_names_with_prop(schema_table, "primary_key")
-            if primary_keys:
-                return primary_keys
-        return get_columns_names_with_prop(schema_table, "unique")
+        if summary.failed_count:
+            raise TypesensePartialImportError(
+                f"{summary.failed_count} of {summary.total_count} documents failed to import "
+                f"into collection '{self._collection_name}' (load {self._load_id}). "
+                f"First errors: {summary.first_errors}",
+                failed_count=summary.failed_count,
+                total_count=summary.total_count,
+            )
+
+    def _iter_documents(
+        self,
+        lines: Iterator[str],
+        id_fields: Sequence[str] | None,
+        json_fields: Sequence[str],
+    ) -> Iterator[dict[str, Any]]:
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            raw: dict[str, Any] = json.loads(line)
+            # Typesense auto-schema rejects nulls; omit the field instead.
+            data = {key: value for key, value in raw.items() if value is not None}
+            data[RESERVED_ID_FIELD] = self._document_id(raw, id_fields)
+            for field in json_fields:
+                if field in data:
+                    data[field] = dlt_json.dumps(data[field])
+            yield data
+
+    def _document_id(self, data: dict[str, Any], id_fields: Sequence[str] | None) -> str:
+        if id_fields:
+            key_values: list[Any] = []
+            for field in id_fields:
+                value = data.get(field)
+                if value is None:
+                    raise TypesenseImportError(
+                        f"Collection '{self._collection_name}': merge key column '{field}' is "
+                        "missing or null in a row, so a deterministic document id cannot be built."
+                    )
+                key_values.append(value)
+            return merge_document_id(self._collection_name, key_values)
+        dlt_id = data.get("_dlt_id")
+        if dlt_id is not None:
+            return str(dlt_id)
+        return str(uuid.uuid4())
+
+    @staticmethod
+    def _json_fields(table: Any) -> list[str]:
+        columns = table.get("columns") or {}
+        return [name for name, column in columns.items() if column.get("data_type") == "json"]
+
+    def _id_fields(self, table: Any) -> Sequence[str] | None:
+        """Columns that key the Typesense ``id``, or ``None`` to use ``_dlt_id``."""
+        if table.get("write_disposition") != "merge":
+            return None
+
+        merge_strategy = resolve_merge_strategy({table["name"]: table}, table)
+        if merge_strategy == "insert-only":
+            return None
+
+        if is_nested_table(table):
+            return None
+
+        primary_keys = _user_columns(get_columns_names_with_prop(table, "primary_key"))
+        if primary_keys:
+            return primary_keys
+        # dlt marks `_dlt_id` unique on every table — ignore system columns or
+        # every re-run would key on a fresh id and duplicate rows.
+        unique_keys = _user_columns(get_columns_names_with_prop(table, "unique"))
+        if unique_keys:
+            return unique_keys
+
+        raise TypesenseImportError(
+            f"Collection '{self._collection_name}': merge (upsert) requires a primary_key or a "
+            "column hinted 'unique' to build a deterministic document id, but the table "
+            f"'{table.get('name')}' declares neither. Add a primary_key, mark a column unique, or "
+            "use the insert-only merge strategy."
+        )
 
 
 class TypesenseRemoveOrphansJob(RunnableLoadJob):
-    """Phase 2: delete child documents orphaned after a root merge/upsert.
+    """Delete child documents orphaned after a root merge/upsert.
 
-    Mirrors the lancedb orphan-follow-up pattern. Not used in v1 (root docs only).
+    Not implemented: merge updates root documents only; stale child rows remain.
     """
 
     def __init__(self, file_path: str, collection_name: str) -> None:
@@ -60,5 +173,6 @@ class TypesenseRemoveOrphansJob(RunnableLoadJob):
 
     def run(self) -> None:
         raise NotImplementedError(
-            "Child-table orphan cleanup is phase 2; flatten documents for v1."
+            "Child-table orphan cleanup is not implemented; "
+            "merge leaves stale nested-list documents in place."
         )
