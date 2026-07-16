@@ -1,0 +1,47 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# uv / packaging
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# Test / coverage / type checkers
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.ruff_cache/
+.mypy_cache/
+.basedpyright/
+.pyright/
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# dlt local state and secrets (never commit)
+.dlt/secrets.toml
+**/pipeline_working_dir/
+*_pipeline/
+
+# Local env
+.env
+.env.*
+!.env.example
+
+# Typesense local data
+typesense-data/
+*.qdrant

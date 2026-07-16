@@ -1,0 +1,35 @@
+name: Feature request
+description: Suggest an enhancement for the Typesense destination
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What problem are you trying to solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How should the destination behave?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Area
+      options:
+        - Write dispositions / merge
+        - Schema / type mapping
+        - Performance / scale
+        - Adapter hints
+        - Docs / DX
+        - Other
+    validations:
+      required: true

@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: dlt community
+    url: https://dlthub.com/community
+    about: Questions about dlt itself (not this destination)
+  - name: Typesense docs
+    url: https://typesense.org/docs/
+    about: Typesense server and API documentation
