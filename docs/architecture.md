@@ -29,15 +29,17 @@ The package mirrors dlt’s **qdrant** destination:
 Secondary references:
 
 - **weaviate** — batch insert with per-object failure aggregation (Typesense import returns HTTP 200 with per-line errors)
-- **lancedb** — orphan follow-up jobs for nested child tables (not implemented here)
+- **lancedb** — orphan follow-up jobs for nested child tables (the template for `TypesenseRemoveOrphansJob`)
 
 ## Module map
 
 ```
 factory.py           → Destination entry + capabilities
 configuration.py     → credentials + batch/timeout knobs + official client factory
-typesense_client.py  → storage init, schema update, state sync, create_load_job
-load_jobs.py         → TypesenseLoadJob + chunked import over the official client
+typesense_client.py  → storage init, schema update, state sync, create_load_job,
+                       orphan-cleanup follow-up scheduling
+load_jobs.py         → TypesenseLoadJob (chunked import) +
+                       TypesenseRemoveOrphansJob (merge orphan cleanup)
 value_conversion.py  → wire-value converters for typed field hints (epoch, decimal)
 type_mapper.py       → collection schema build (typed pinned fields + `.*` auto)
 typesense_adapter.py → per-field + collection-level schema hints
@@ -86,9 +88,35 @@ is non-string, so `float[]` vector fields arrive as native lists.
 
 Always prefer `upsert`/`emplace` over `create` so dlt’s whole-file retry is idempotent.
 
+### Orphan cleanup (merge `upsert`)
+
+Nested (child) tables keep their documents keyed on `_dlt_id`, so re-loading a
+root row whose nested list shrank would leave stale children behind. Following
+the lancedb template:
+
+- `TypesenseClient.create_table_chain_completed_followup_jobs` emits one
+  `ReferenceFollowupJobRequest` per merge (`upsert`) chain with nested tables,
+  pointing at the chain's completed JSONL files. The `reference` loader format
+  is declared in the factory capabilities for exactly this internal routing.
+- `create_load_job` routes `.reference` files to `TypesenseRemoveOrphansJob`,
+  which is scheduled/retried by dlt like any other load job (idempotent:
+  re-running after a partial failure converges).
+- The job reads root ids (`_dlt_id`) from the root files; per nested
+  collection it exports current child ids for those roots (filter on
+  `_dlt_root_id`, deterministic because merge propagates the root key), diffs
+  against the loaded ids, and deletes stale ids with bounded `filter_by`
+  batches — including grandchildren, and children of roots whose lists were
+  emptied (jobless nested tables are resolved from the schema, not the files).
+- Gate: merge + `upsert` strategy only, skipped for `insert-only`, single-table
+  chains, and resources adapted with `no_remove_orphans=True`
+  (`x-typesense-no-remove-orphans` table hint).
+
 ## Scale
 
 - Set `recommended_file_size` so large tables split into parallel load jobs
 - Stream JSONL in client-sized chunks; do not buffer entire files
 - Parse every import response line (HTTP 200 ≠ full success)
 - Replace uses drop/recreate — not delete-by-filter over millions of rows
+- Orphan cleanup batches every export/delete filter to 200 ids so `filter_by`
+  strings stay far below URL length limits; its cost scales with the number of
+  children of the re-loaded roots, not with collection size

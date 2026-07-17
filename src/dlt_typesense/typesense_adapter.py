@@ -18,6 +18,9 @@ from dlt.extract import DltResource
 FIELD_HINT = "x-typesense-field"
 # Table-level hint: dict of Typesense collection parameters, stored verbatim.
 COLLECTION_HINT = "x-typesense-collection"
+# Table-level hint: True disables orphan cleanup of nested-table documents
+# under merge (upsert). Only written when set, so absence means "clean up".
+NO_REMOVE_ORPHANS_HINT = "x-typesense-no-remove-orphans"
 
 FIELD_PARAMS: frozenset[str] = frozenset(
     {
@@ -83,6 +86,7 @@ def typesense_adapter(
     index: str | list[str] | None = None,
     field_hints: dict[str, dict[str, Any]] | None = None,
     collection_hints: dict[str, Any] | None = None,
+    no_remove_orphans: bool = False,
 ) -> DltResource:
     """Attach Typesense schema hints to a resource or in-memory items.
 
@@ -111,6 +115,10 @@ def typesense_adapter(
             the shorthand params; explicit entries win. See ``FIELD_PARAMS``.
         collection_hints: Collection-level parameters, e.g.
             ``{"default_sorting_field": "price"}``. See ``COLLECTION_PARAMS``.
+        no_remove_orphans: Disable the automatic deletion of orphaned
+            nested-table (child) documents that runs after every merge
+            (upsert) load of this resource. See "Orphan cleanup" in the
+            README for the exact semantics and cost.
 
     Returns:
         The dlt resource with Typesense hints applied.
@@ -144,10 +152,13 @@ def typesense_adapter(
     if collection_hints is not None:
         _validate_collection_params(collection_hints)
 
-    if not column_params and collection_hints is None:
+    if not isinstance(no_remove_orphans, bool):
+        raise ValueError("no_remove_orphans must be a bool.")
+
+    if not column_params and collection_hints is None and not no_remove_orphans:
         raise ValueError(
             "typesense_adapter requires at least one of: facet, sort, index, "
-            "field_hints, collection_hints."
+            "field_hints, collection_hints, no_remove_orphans."
         )
 
     column_hints: TTableSchemaColumns = {}
@@ -161,11 +172,15 @@ def typesense_adapter(
         column_schema[FIELD_HINT] = params  # type: ignore[typeddict-unknown-key]
         column_hints[column] = column_schema
 
+    table_hints: dict[str, Any] = {}
+    if collection_hints is not None:
+        table_hints[COLLECTION_HINT] = dict(collection_hints)
+    if no_remove_orphans:
+        table_hints[NO_REMOVE_ORPHANS_HINT] = True
+
     resource.apply_hints(
         columns=column_hints or None,
-        additional_table_hints=(
-            {COLLECTION_HINT: dict(collection_hints)} if collection_hints is not None else None
-        ),
+        additional_table_hints=table_hints or None,
     )
     return resource
 

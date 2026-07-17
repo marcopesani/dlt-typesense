@@ -11,6 +11,7 @@ from dlt.extract import DltResource
 from dlt_typesense.typesense_adapter import (
     COLLECTION_HINT,
     FIELD_HINT,
+    NO_REMOVE_ORPHANS_HINT,
     typesense_adapter,
 )
 
@@ -125,6 +126,27 @@ def test_repeat_adapter_replaces_field_dict() -> None:
 def test_empty_call_rejected() -> None:
     with pytest.raises(ValueError, match="at least one"):
         typesense_adapter(make_resource())
+
+
+def test_no_remove_orphans_lands_on_table() -> None:
+    resource = typesense_adapter(make_resource(), no_remove_orphans=True)
+    table = resource.compute_table_schema()
+    assert table[NO_REMOVE_ORPHANS_HINT] is True  # type: ignore[typeddict-item]
+
+
+def test_no_remove_orphans_absent_by_default() -> None:
+    resource = typesense_adapter(make_resource(), facet="category")
+    assert NO_REMOVE_ORPHANS_HINT not in resource.compute_table_schema()
+
+
+def test_no_remove_orphans_alone_is_valid() -> None:
+    resource = typesense_adapter(make_resource(), no_remove_orphans=True)
+    assert isinstance(resource, DltResource)
+
+
+def test_no_remove_orphans_must_be_bool() -> None:
+    with pytest.raises(ValueError, match="no_remove_orphans must be a bool"):
+        typesense_adapter(make_resource(), no_remove_orphans="yes")  # type: ignore[arg-type]
 
 
 def test_unknown_field_param_rejected() -> None:

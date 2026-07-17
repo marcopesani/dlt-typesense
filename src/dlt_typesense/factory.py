@@ -26,7 +26,9 @@ class typesense(Destination[TypesenseClientConfiguration, "TypesenseClient"]):
     def _raw_capabilities(self) -> DestinationCapabilitiesContext:
         caps = DestinationCapabilitiesContext()
         caps.preferred_loader_file_format = "jsonl"
-        caps.supported_loader_file_formats = ["jsonl"]
+        # "reference" is dlt's internal format for follow-up jobs; it routes the
+        # merge orphan-cleanup job (lancedb precedent), never user data.
+        caps.supported_loader_file_formats = ["jsonl", "reference"]
         caps.naming_convention = "dlt_typesense.naming"
         caps.has_case_sensitive_identifiers = True
         caps.max_identifier_length = 255
