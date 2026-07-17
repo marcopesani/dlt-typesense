@@ -70,6 +70,7 @@ only-include = [
     "docs",
     "LICENSE",
     "README.md",
+    "CHANGELOG.md",
     "pyproject.toml",
     "uv.lock",
     ".python-version",
