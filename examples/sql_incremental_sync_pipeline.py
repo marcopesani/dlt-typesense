@@ -3,14 +3,22 @@
 Declarative multi-collection config, incremental cursor, merge on primary key,
 typed field hints (timestamps → Unix epoch), and ``add_map`` for row cleaning.
 
-Uses an in-memory SQLite database so the example runs without warehouse creds.
-Swap ``sqlalchemy_url`` for Redshift/Postgres/etc. in real pipelines.
+Uses a temp SQLite database so the example runs without warehouse creds.
+Swap the SQLAlchemy URL for Redshift/Postgres/etc. in real pipelines.
+
+If a synced table has nested lists, merge (``upsert``) automatically removes
+orphaned child documents for parents present in the load — see README
+"Orphan cleanup for nested tables". Opt out with
+``typesense_adapter(..., no_remove_orphans=True)``.
 
 Run a local Typesense first (repo root):
 
     docker compose up -d
+    # or: .local/typesense/typesense-server --data-dir=.local/typesense/data \\
+    #        --api-key=local-dev-key --api-port=8108
 
-Credentials resolve from ``.dlt/secrets.toml`` or env vars:
+Credentials resolve from ``.dlt/secrets.toml`` or
+``DESTINATION__TYPESENSE__CREDENTIALS__*`` / ``TYPESENSE_*`` env vars:
 
 ```toml
 [destination.typesense.credentials]
@@ -156,9 +164,11 @@ def make_resource(
     resource.apply_hints(
         table_name=config["collection"],
         primary_key=config["primary_key"],
+        # SQLite returns naive datetimes; keep the cursor naive to avoid
+        # tz-awareness mismatches on the first run.
         incremental=dlt.sources.incremental(
             cursor_path=config["timestamp_field"],
-            initial_value=datetime(1970, 1, 1, tzinfo=timezone.utc),
+            initial_value=datetime(1970, 1, 1),
         ),
     )
     if limit is not None:
@@ -190,6 +200,7 @@ def run(
             _seed_sqlite(sqlite_path)
         engine = sa.create_engine(f"sqlite:///{sqlite_path}")
 
+        # destination="typesense" also works once credentials are in secrets/env.
         pipeline = dlt.pipeline(
             pipeline_name="sql_incremental_typesense",
             destination=typesense(),

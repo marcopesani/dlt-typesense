@@ -1,8 +1,15 @@
 """Append vs replace write dispositions against Typesense.
 
+- ``append``: documents keyed by ``_dlt_id``; re-runs add new documents.
+- ``replace``: drop + recreate the collection, then import (``truncate-and-insert``).
+
+For upsert-by-primary-key and nested-list orphan cleanup, see ``merge_pipeline.py``.
+
 Run a local Typesense first (repo root):
 
     docker compose up -d
+    # or: .local/typesense/typesense-server --data-dir=.local/typesense/data \\
+    #        --api-key=local-dev-key --api-port=8108
 
 Credentials resolve from ``.dlt/secrets.toml`` or ``TYPESENSE_*`` /
 ``DESTINATION__TYPESENSE__CREDENTIALS__*`` env vars:

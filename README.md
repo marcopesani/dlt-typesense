@@ -79,7 +79,11 @@ pipeline.run(products())
 ```
 
 4. Start a local Typesense with `docker compose up -d` and run the examples in
-   [`examples/`](https://github.com/marcopesani/dlt-typesense/tree/main/examples).
+   [`examples/`](https://github.com/marcopesani/dlt-typesense/tree/main/examples):
+   `merge_pipeline.py` (upsert + nested orphan cleanup),
+   `append_replace_pipeline.py`,
+   `schema_hints_pipeline.py` (facets, vectors, epoch timestamps),
+   `sql_incremental_sync_pipeline.py` (production-shaped SQL sync).
 
 ## `typesense_adapter`
 
