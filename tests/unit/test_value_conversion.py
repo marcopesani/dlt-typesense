@@ -274,4 +274,3 @@ def test_scientific_notation_decimal_string() -> None:
     data = {"qty": "1E+2"}
     apply_conversions(data, converters, collection_name="ds_events")
     assert data["qty"] == 100
-

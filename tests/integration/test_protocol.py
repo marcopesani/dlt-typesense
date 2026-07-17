@@ -165,9 +165,7 @@ def test_drop_storage_empty_dataset_only_matches_schema_tables(
     """Empty dataset_name deletes bare schema-table names only — not unrelated collections."""
     pipeline = make_pipeline(dataset_name="")
     sibling = f"unrelated_{pipeline.pipeline_name}"
-    probe.collections.create(
-        {"name": sibling, "fields": [{"name": ".*", "type": "auto"}]}
-    )
+    probe.collections.create({"name": sibling, "fields": [{"name": ".*", "type": "auto"}]})
     try:
 
         @dlt.resource(name="items", write_disposition="append")

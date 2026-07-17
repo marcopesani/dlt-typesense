@@ -158,8 +158,8 @@ def test_import_streams_lazily_with_line_budget(tmp_path, monkeypatch) -> None:
 
     rows = [{"_dlt_id": str(i), "v": i} for i in range(25)]
     file_path = _write_jsonl(tmp_path, rows)
-    lines_read = {"n": 0}
-    first_call_at = {"n": None}
+    lines_read: dict[str, int] = {"n": 0}
+    first_call_at: dict[str, int | None] = {"n": None}
 
     class CountingFile:
         def __init__(self, path: str) -> None:

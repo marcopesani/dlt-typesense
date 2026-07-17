@@ -208,9 +208,7 @@ def test_object_hint_keeps_nested_dict(make_pipeline, documents) -> None:
     def products():
         yield {"sku": "A1", "attrs": {"color": "red", "size": "M"}}
 
-    pipeline.run(
-        typesense_adapter(products(), field_hints={"attrs": {"type": "object"}})
-    )
+    pipeline.run(typesense_adapter(products(), field_hints={"attrs": {"type": "object"}}))
     doc = documents(make_pipeline.qualified_name(pipeline, "products"))[0]
     assert isinstance(doc["attrs"], dict)
     assert doc["attrs"]["color"] == "red"
