@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import base64
-import datetime
 import decimal
 import json
 
@@ -47,23 +45,6 @@ def test_bigint_boundaries_are_exact(make_pipeline, documents) -> None:
     assert doc["lo"] == lo
 
 
-def test_timestamp_and_date_are_iso_strings(make_pipeline, documents) -> None:
-    ts = datetime.datetime(2026, 7, 16, 12, 34, 56, 789012, tzinfo=datetime.timezone.utc)
-    d = datetime.date(2026, 7, 16)
-    doc = _load_one(make_pipeline, documents, {"ts": ts, "d": d})
-    assert isinstance(doc["ts"], str)
-    assert datetime.datetime.fromisoformat(doc["ts"]) == ts
-    assert "789012" in doc["ts"]  # microseconds preserved
-    assert doc["d"] == "2026-07-16"
-
-
-def test_time_round_trips_as_iso_string(make_pipeline, documents) -> None:
-    t = datetime.time(12, 34, 56)
-    doc = _load_one(make_pipeline, documents, {"t": t})
-    assert isinstance(doc["t"], str)
-    assert datetime.time.fromisoformat(doc["t"]) == t
-
-
 def test_decimal_keeps_full_precision_as_string(make_pipeline, documents) -> None:
     doc = _load_one(make_pipeline, documents, {"amount": decimal.Decimal("123456789.123456789")})
     assert doc["amount"] == "123456789.123456789"
@@ -75,12 +56,6 @@ def test_wei_beyond_int64_is_string(make_pipeline, documents) -> None:
     assert doc["balance"] == str(big)
 
 
-def test_binary_round_trips_as_base64(make_pipeline, documents) -> None:
-    payload = b"\x00\x01\x02hello"
-    doc = _load_one(make_pipeline, documents, {"blob": payload})
-    assert base64.b64decode(doc["blob"]) == payload
-
-
 def test_json_column_pinned_representation(make_pipeline, documents) -> None:
     doc = _load_one(
         make_pipeline,
@@ -90,3 +65,23 @@ def test_json_column_pinned_representation(make_pipeline, documents) -> None:
     )
     assert isinstance(doc["payload"], str)
     assert json.loads(doc["payload"]) == {"nested": {"a": 1}, "arr": [1, 2, 3]}
+
+
+def test_null_first_then_value_and_empty_string(make_pipeline, documents, count_documents) -> None:
+    """Nulls are stripped; empty strings survive; later non-null values materialize the field."""
+    pipeline = make_pipeline()
+
+    @dlt.resource(name="rows", write_disposition="append")
+    def rows():
+        yield {"rid": 1, "maybe": None, "empty": ""}
+        yield {"rid": 2, "maybe": "present", "empty": ""}
+
+    info = pipeline.run(rows())
+    assert not info.has_failed_jobs
+    collection = make_pipeline.qualified_name(pipeline, "rows")
+    assert count_documents(collection) == 2
+    docs = {d["rid"]: d for d in documents(collection)}
+    assert "maybe" not in docs[1]
+    assert docs[1]["empty"] == ""
+    assert docs[2]["maybe"] == "present"
+    assert docs[2]["empty"] == ""

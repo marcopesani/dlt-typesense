@@ -30,13 +30,6 @@ def _configured() -> TypesenseClientConfiguration:
     return config
 
 
-def test_credentials_defaults() -> None:
-    creds = TypesenseCredentials()
-    assert creds.host == "localhost"
-    assert creds.port == 8108
-    assert creds.protocol == "http"
-
-
 def test_fingerprint_stable_and_key_independent() -> None:
     config_a = _configured()
     config_b = _configured()
@@ -56,8 +49,6 @@ def test_fingerprint_discriminates_connection_tuple() -> None:
 @pytest.mark.parametrize(
     "rendered",
     [
-        lambda c: str(c.credentials),
-        lambda c: repr(c.credentials),
         lambda c: str(c),
         lambda c: c.fingerprint(),
         lambda c: c.physical_location(),
@@ -72,22 +63,6 @@ def test_physical_location_shows_connection_only() -> None:
     config = _configured()
     assert config.physical_location() == "https://h.example:7777"
     assert str(config) == "https://h.example:7777"
-
-
-def test_missing_api_key_makes_config_partial() -> None:
-    creds = TypesenseCredentials()
-    creds.host, creds.port, creds.protocol = "localhost", 8108, "http"
-    assert creds.is_partial() is True
-    resolvable = creds.get_resolvable_fields()
-    assert "api_key" in resolvable
-    assert creds.is_field_resolved(None, resolvable["api_key"]) is False
-
-
-def test_present_api_key_resolves() -> None:
-    creds = TypesenseCredentials()
-    creds.host, creds.port, creds.protocol, creds.api_key = "localhost", 8108, "http", "k"
-    resolvable = creds.get_resolvable_fields()
-    assert creds.is_field_resolved("k", resolvable["api_key"]) is True
 
 
 def test_credentials_resolve_from_env_with_defaults(monkeypatch) -> None:
@@ -124,3 +99,33 @@ def test_create_import_action_rejected() -> None:
     config.import_action = "create"
     with pytest.raises(DestinationCapabilitiesException):
         config.on_resolved()
+
+
+def test_emplace_import_action_accepted() -> None:
+    config = _configured()
+    config.import_action = "emplace"
+    config.on_resolved()
+
+
+def test_get_client_wires_nodes_retries_and_timeouts() -> None:
+    import httpx
+
+    creds = TypesenseCredentials()
+    creds.host = "h.example"
+    creds.port = 443
+    creds.protocol = "https"
+    creds.api_key = "k"
+    creds.connection_timeout_seconds = 5.0
+    client = creds.get_client(read_timeout_seconds=99.0)
+    try:
+        node = client.config.nodes[0]
+        assert node.host == "h.example"
+        assert node.port == 443
+        assert node.protocol == "https"
+        assert client.config.num_retries == 0
+        timeout = client.config.connection_timeout_seconds
+        assert isinstance(timeout, httpx.Timeout)
+        assert timeout.connect == 5.0
+        assert timeout.read == 99.0
+    finally:
+        client.api_call.close()

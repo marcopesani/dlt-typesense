@@ -10,6 +10,7 @@ explicitly, everything else falls through to ``.*`` auto.
 from __future__ import annotations
 
 import hashlib
+import inspect
 from collections.abc import Iterable
 from contextlib import suppress
 from types import TracebackType
@@ -43,6 +44,10 @@ from dlt_typesense.exceptions import wrap_typesense_error
 from dlt_typesense.load_jobs import TypesenseLoadJob
 from dlt_typesense.type_mapper import collection_schema_auto, collection_schema_from_table
 from dlt_typesense.typesense_adapter import COLLECTION_HINT, FIELD_HINT
+
+# dlt 1.28.0 added `force` to JobClientBase.update_stored_schema; older releases
+# reject the kwarg. Probe once so we stay compatible across the declared range.
+_BASE_ACCEPTS_FORCE = "force" in inspect.signature(JobClientBase.update_stored_schema).parameters
 
 
 class TypesenseClient(JobClientBase, WithStateSync):
@@ -200,6 +205,15 @@ class TypesenseClient(JobClientBase, WithStateSync):
 
     @wrap_typesense_error
     def drop_storage(self) -> None:
+        """Delete collections owned by this dataset.
+
+        With a non-empty ``dataset_name``, deletes every collection whose name
+        starts with ``{dataset}{separator}``. With an empty dataset name there
+        is no prefix: only collections whose bare name matches a table in the
+        current schema are deleted. Unrelated collections that happen to share
+        those bare names are therefore also removed — prefer a non-empty
+        dataset name in shared Typesense clusters.
+        """
         collections = self._ts.collections.retrieve()
         existing = {c["name"] for c in collections}
         if self.dataset_name:
@@ -217,7 +231,10 @@ class TypesenseClient(JobClientBase, WithStateSync):
         expected_update: TSchemaTables = None,  # type: ignore[assignment]
         force: bool = False,
     ) -> TSchemaTables | None:
-        applied_update = super().update_stored_schema(only_tables, expected_update, force)
+        if _BASE_ACCEPTS_FORCE:
+            applied_update = super().update_stored_schema(only_tables, expected_update, force)
+        else:
+            applied_update = super().update_stored_schema(only_tables, expected_update)
         schema_info = self.get_stored_schema_by_hash(self.schema.stored_version_hash)
         if schema_info is None or force:
             logger.info(
@@ -385,4 +402,17 @@ def _doc_id(*parts: str) -> str:
 
 
 def _eq_filter(field: str, value: str) -> str:
+    """Build a Typesense equality filter with a backtick-quoted literal.
+
+    Typesense has no escape for backticks inside ``field:=`…` `` literals, so
+    values containing a backtick are rejected rather than silently no-matching
+    (which would make state/schema lookups look empty and reset incremental
+    cursors).
+    """
+    if "`" in value:
+        raise ValueError(
+            f"Typesense filter value for '{field}' contains a backtick, which cannot "
+            "be escaped in field:=`…` literals. Rename the pipeline/schema so the "
+            "value has no backticks."
+        )
     return f"{field}:=`{value}`"

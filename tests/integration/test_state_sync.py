@@ -53,6 +53,8 @@ def test_state_visible_only_after_complete_load(make_pipeline, open_client, prob
         still = client.get_stored_state(pipeline.pipeline_name)
         assert still is not None
         assert still.state != "not-committed"
+        assert still.version == committed.version
+        assert still.state == committed.state
 
 
 def test_get_stored_state_returns_newest_committed(make_pipeline, open_client) -> None:
@@ -126,6 +128,80 @@ def test_second_machine_restore(make_pipeline, count_documents, tmp_path) -> Non
     data.extend([{"seq": 4}, {"seq": 5}])
     pipeline_two.run(source())
     assert count_documents(collection) == 5
+
+
+def test_get_stored_state_pages_past_incomplete(make_pipeline, open_client, probe) -> None:
+    """>50 incomplete newer states must not hide the committed state on page 2."""
+    pipeline = make_pipeline()
+
+    @dlt.resource(name="items", write_disposition="append")
+    def items():
+        yield {"v": 1}
+
+    pipeline.run(items())
+    with open_client(pipeline) as client:
+        committed = client.get_stored_state(pipeline.pipeline_name)
+        assert committed is not None
+        state_collection = client.make_qualified_collection_name(client.schema.state_table_name)
+        naming = client.schema.naming
+        p_version = naming.normalize_identifier("version")
+        p_pipeline = naming.normalize_identifier("pipeline_name")
+        p_state = naming.normalize_identifier("state")
+        p_created = naming.normalize_identifier("created_at")
+        p_load = naming.normalize_identifier("_dlt_load_id")
+        p_engine = naming.normalize_identifier("engine_version")
+        # page_size is 50; forge 50 incomplete states with higher versions.
+        for i in range(50):
+            probe.collections[state_collection].documents.upsert(
+                {
+                    "id": f"forged-{i}",
+                    p_version: committed.version + 1 + i,
+                    p_engine: committed.engine_version,
+                    p_pipeline: pipeline.pipeline_name,
+                    p_state: "incomplete",
+                    p_created: "2099-01-01T00:00:00+00:00",
+                    p_load: f"load-never-completed-{i}",
+                }
+            )
+        still = client.get_stored_state(pipeline.pipeline_name)
+        assert still is not None
+        assert still.version == committed.version
+        assert still.state == committed.state
+
+
+def test_pipeline_state_isolated_by_pipeline_name(make_pipeline, open_client) -> None:
+    dataset = "shared_state_ds"
+    pipe_a = make_pipeline(pipeline_name="pipe_a", dataset_name=dataset)
+    pipe_b = make_pipeline(pipeline_name="pipe_b", dataset_name=dataset)
+
+    @dlt.resource(name="items", write_disposition="append")
+    def items_a():
+        yield {"v": 1}
+
+    @dlt.resource(name="items", write_disposition="append")
+    def items_b():
+        yield {"v": 2}
+
+    pipe_a.run(items_a())
+    pipe_b.run(items_b())
+    with open_client(pipe_a) as client:
+        state_a = client.get_stored_state("pipe_a")
+        state_b = client.get_stored_state("pipe_b")
+        assert state_a is not None and state_b is not None
+        assert state_a.pipeline_name == "pipe_a"
+        assert state_b.pipeline_name == "pipe_b"
+
+
+def test_backtick_in_pipeline_name_rejected(make_pipeline, open_client) -> None:
+    pipeline = make_pipeline()
+
+    @dlt.resource(name="items", write_disposition="append")
+    def items():
+        yield {"v": 1}
+
+    pipeline.run(items())
+    with open_client(pipeline) as client, pytest.raises(ValueError, match="backtick"):
+        client.get_stored_state("bad`pipe")
 
 
 def test_schema_evolution_bumps_version(make_pipeline, open_client) -> None:

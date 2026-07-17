@@ -45,6 +45,15 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
+        dlt-version: ["locked"]
+        include:
+          # Floor / latest / prerelease matrix (Python 3.12 only).
+          - python-version: "3.12"
+            dlt-version: "1.20.0"
+          - python-version: "3.12"
+            dlt-version: "latest"
+          - python-version: "3.12"
+            dlt-version: "pre"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -53,15 +62,32 @@ jobs:
           enable-cache: true
       - name: Sync
         run: uv sync --group dev
+      - name: Pin dlt (${{ matrix.dlt-version }})
+        if: matrix.dlt-version != 'locked'
+        run: |
+          case "${{ matrix.dlt-version }}" in
+            latest) uv pip install --python .venv "dlt>=1.20,<2" ;;
+            pre)    uv pip install --python .venv --pre "dlt>=1.20,<2" || true ;;
+            *)      uv pip install --python .venv "dlt==${{ matrix.dlt-version }}" ;;
+          esac
+          .venv/bin/python -c "import dlt; print('dlt', dlt.__version__)"
       - name: Pytest
-        run: uv run pytest
+        # Prerelease leg is advisory — surface failures without blocking CI.
+        # Use the venv binary (not `uv run`) so a pinned dlt is not re-synced away.
+        continue-on-error: ${{ matrix.dlt-version == 'pre' }}
+        run: |
+          if [ "${{ matrix.dlt-version }}" = "locked" ]; then
+            uv run pytest
+          else
+            .venv/bin/pytest
+          fi
 
   integration:
     name: integration
     runs-on: ubuntu-latest
     services:
       typesense:
-        image: typesense/typesense:29.0
+        image: typesense/typesense:30.2
         ports:
           - 8108:8108
         env:

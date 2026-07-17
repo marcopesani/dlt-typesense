@@ -153,15 +153,19 @@ def test_unique_hint_keys_the_upsert(make_pipeline, documents) -> None:
     assert docs[0]["price"] == 2
 
 
-def test_merge_without_key_is_terminal(make_pipeline) -> None:
+def test_merge_without_key_is_terminal(make_pipeline, count_documents) -> None:
     pipeline = make_pipeline()
 
     @dlt.resource(name="products", write_disposition="merge")
     def products():
         yield {"title": "no key"}
 
-    with pytest.raises(PipelineStepFailed):
+    with pytest.raises(PipelineStepFailed) as excinfo:
         pipeline.run(products())
+    message = str(excinfo.value)
+    assert "primary_key" in message or "unique" in message
+    # Schema create may materialize the collection; the load must write nothing.
+    assert count_documents(make_pipeline.qualified_name(pipeline, "products")) == 0
 
 
 def test_mixed_insert_and_update_batch(make_pipeline, documents) -> None:
@@ -186,21 +190,21 @@ def test_mixed_insert_and_update_batch(make_pipeline, documents) -> None:
 
 
 def test_merge_retry_converges(make_pipeline, documents, monkeypatch) -> None:
+    """Fail AFTER the first client chunk succeeds; whole-file retry must converge."""
     original = Documents.import_
-    state = {"failed": False}
+    state = {"calls": 0, "failed": False}
 
     def flaky(self, documents, import_parameters=None, batch_size=None):
-        if not state["failed"]:
+        result = original(self, documents, import_parameters, batch_size)
+        state["calls"] += 1
+        if state["calls"] == 1 and not state["failed"]:
             state["failed"] = True
-            # Consume to simulate a partial mid-import interruption.
-            if not isinstance(documents, (bytes, str)):
-                list(documents)
-            raise TypesenseTransientError("simulated mid-import failure")
-        return original(self, documents, import_parameters, batch_size)
+            raise TypesenseTransientError("simulated after-chunk-1 failure")
+        return result
 
     monkeypatch.setattr(Documents, "import_", flaky)
 
-    pipeline = make_pipeline()
+    pipeline = make_pipeline(destination_kwargs={"client_batch_size": 2})
 
     @dlt.resource(name="products", write_disposition="merge", primary_key="sku")
     def products():
@@ -208,13 +212,14 @@ def test_merge_retry_converges(make_pipeline, documents, monkeypatch) -> None:
 
     info = pipeline.run(products())
     assert not info.has_failed_jobs
-    assert state["failed"]  # the failure really was injected
+    assert state["failed"]
     collection = make_pipeline.qualified_name(pipeline, "products")
     docs = {d["sku"]: d["n"] for d in documents(collection)}
     assert docs == {f"S{i}": i for i in range(5)}
 
 
-def test_insert_only_never_modifies_and_retry_idempotent(make_pipeline, documents, probe) -> None:
+def test_insert_only_keys_by_dlt_id_not_primary_key(make_pipeline, documents) -> None:
+    """insert-only must use _dlt_id (not uuid5 of PK); identical re-run is idempotent."""
     pipeline = make_pipeline()
 
     @dlt.resource(
@@ -223,21 +228,26 @@ def test_insert_only_never_modifies_and_retry_idempotent(make_pipeline, document
         primary_key="sku",
     )
     def products():
-        yield from ({"sku": f"S{i}", "n": i} for i in range(3))
+        yield {"sku": "A1", "n": 1}
+        yield {"sku": "B2", "n": 2}
 
     pipeline.run(products())
     collection = make_pipeline.qualified_name(pipeline, "products")
-    docs = documents(collection)
-    assert len(docs) == 3
-    for doc in docs:
-        assert doc["id"] == doc["_dlt_id"]  # keyed by _dlt_id (append path)
+    first = {d["sku"]: d for d in documents(collection)}
+    assert set(first) == {"A1", "B2"}
+    for doc in first.values():
+        assert doc["id"] == doc["_dlt_id"]
+        # Must not be the merge/upsert uuid5(collection, key) scheme.
+        assert doc["id"] != merge_document_id(collection, [doc["sku"]])
 
-    probe.collections[collection].documents.import_(docs, {"action": "upsert"})
-    found = probe.collections[collection].documents.search({"q": "*", "per_page": 0})["found"]
-    assert found == 3
+    pipeline.run(products())  # identical rows → same _dlt_ids → no duplicates
+    second = {d["sku"]: d for d in documents(collection)}
+    assert set(second) == {"A1", "B2"}
+    assert second["A1"]["id"] == first["A1"]["id"]
+    assert second["B2"]["id"] == first["B2"]["id"]
 
 
-def test_merge_leaves_stale_child_documents(make_pipeline, count_documents) -> None:
+def test_merge_leaves_stale_child_documents(make_pipeline, documents, count_documents) -> None:
     pipeline = make_pipeline()
 
     @dlt.resource(name="orders", write_disposition="merge", primary_key="order_id")
@@ -254,4 +264,49 @@ def test_merge_leaves_stale_child_documents(make_pipeline, count_documents) -> N
 
     pipeline.run(v2())
     assert count_documents(make_pipeline.qualified_name(pipeline, "orders")) == 1
-    assert count_documents(child) > 1
+    # Documented limitation: orphan cleanup is not implemented.
+    assert count_documents(child) == 2
+    assert {d["sku"] for d in documents(child)} == {"a", "b"}
+
+
+def test_upsert_drops_omitted_fields(make_pipeline, documents) -> None:
+    """Default upsert is whole-document replace; omitted fields disappear."""
+    pipeline = make_pipeline()
+
+    @dlt.resource(name="products", write_disposition="merge", primary_key="sku")
+    def initial():
+        yield {"sku": "A1", "a": 1, "b": 2}
+
+    pipeline.run(initial())
+    collection = make_pipeline.qualified_name(pipeline, "products")
+
+    @dlt.resource(name="products", write_disposition="merge", primary_key="sku")
+    def v2():
+        yield {"sku": "A1", "a": 10}  # `b` omitted
+
+    pipeline.run(v2())
+    doc = documents(collection)[0]
+    assert doc["a"] == 10
+    assert "b" not in doc
+
+
+def test_append_then_merge_produces_duplicates(make_pipeline, documents, count_documents) -> None:
+    """Append keys by _dlt_id; merge keys by uuid5(PK) — switching leaves duplicates."""
+    pipeline = make_pipeline()
+
+    @dlt.resource(name="products", write_disposition="append")
+    def appended():
+        yield {"sku": "A1", "price": 1}
+
+    pipeline.run(appended())
+    collection = make_pipeline.qualified_name(pipeline, "products")
+    assert count_documents(collection) == 1
+
+    @dlt.resource(name="products", write_disposition="merge", primary_key="sku")
+    def merged():
+        yield {"sku": "A1", "price": 2}
+
+    pipeline.run(merged())
+    docs = documents(collection)
+    assert len(docs) == 2
+    assert {d["price"] for d in docs} == {1, 2}

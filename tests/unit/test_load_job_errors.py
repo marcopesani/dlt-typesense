@@ -66,10 +66,11 @@ def _make_job(
     return job
 
 
-def test_create_action_is_rejected(tmp_path) -> None:
+@pytest.mark.parametrize("action", ["create", "update", "delete"])
+def test_unsafe_import_actions_are_rejected(tmp_path, action: str) -> None:
     ts = FakeTs()
     job = _make_job(tmp_path, "c", ts)
-    job._job_client.config.import_action = "create"  # type: ignore[attr-defined]
+    job._job_client.config.import_action = action  # type: ignore[attr-defined]
     with pytest.raises(TypesenseImportError):
         job.run()
     assert ts.calls == []
@@ -118,37 +119,6 @@ def test_import_chunks_and_forwards_server_batch_size(tmp_path) -> None:
     assert all(params == {"action": "upsert", "batch_size": 40} for _, _, params in ts.calls)
 
 
-def test_import_streams_lazily_not_buffered_whole(tmp_path) -> None:
-    # Write enough rows that a naive full-buffer would pull everything before the
-    # first SDK call; assert the first import_ sees only one client batch.
-    rows = [{"_dlt_id": str(i), "v": i} for i in range(25)]
-    file_path = _write_jsonl(tmp_path, rows)
-    pulled_at_first_call: dict[str, int] = {}
-
-    class CountingFakeTs(FakeTs):
-        def __getitem__(self, name: str):
-            def _import(documents, params):
-                chunk = list(documents)
-                if "n" not in pulled_at_first_call:
-                    # Lines already consumed from the file equal the first chunk size
-                    # when streaming; prove we did not buffer all 25 first.
-                    pulled_at_first_call["n"] = len(chunk)
-                self.calls.append((name, chunk, dict(params)))
-                return [{"success": True} for _ in chunk]
-
-            return SimpleNamespace(documents=SimpleNamespace(import_=_import))
-
-    ts = CountingFakeTs()
-    job = TypesenseLoadJob(str(file_path), "c")
-    job._job_client = _FakeClient(ts)  # type: ignore[assignment]
-    job._job_client.config.client_batch_size = 10  # type: ignore[attr-defined]
-    job._load_table = {"name": "rows", "write_disposition": "append", "columns": {}}
-    job._load_id = "1"
-    job.run()
-    assert sum(len(chunk) for _, chunk, _ in ts.calls) == 25
-    assert pulled_at_first_call["n"] == 10
-
-
 def test_import_collects_per_line_failures(tmp_path) -> None:
     def respond(chunk):
         return [
@@ -180,3 +150,134 @@ def test_import_maps_sdk_errors(tmp_path) -> None:
     job = _make_job(tmp_path, "c", FakeTs(respond))
     with pytest.raises(TypesenseImportError):
         job.run()
+
+
+def test_import_streams_lazily_with_line_budget(tmp_path, monkeypatch) -> None:
+    """First import_ must fire after ≤ client_batch_size lines are read from the file."""
+    from dlt.common.storages import FileStorage
+
+    rows = [{"_dlt_id": str(i), "v": i} for i in range(25)]
+    file_path = _write_jsonl(tmp_path, rows)
+    lines_read: dict[str, int] = {"n": 0}
+    first_call_at: dict[str, int | None] = {"n": None}
+
+    class CountingFile:
+        def __init__(self, path: str) -> None:
+            self._f = open(path)  # noqa: SIM115
+
+        def __iter__(self):
+            return self
+
+        def __next__(self) -> str:
+            line = next(self._f)
+            lines_read["n"] += 1
+            return line
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            self._f.close()
+
+    monkeypatch.setattr(FileStorage, "open_zipsafe_ro", lambda path: CountingFile(path))
+
+    class CountingFakeTs(FakeTs):
+        def __getitem__(self, name: str):
+            def _import(documents, params):
+                chunk = list(documents)
+                if first_call_at["n"] is None:
+                    first_call_at["n"] = lines_read["n"]
+                self.calls.append((name, chunk, dict(params)))
+                return [{"success": True} for _ in chunk]
+
+            return SimpleNamespace(documents=SimpleNamespace(import_=_import))
+
+    ts = CountingFakeTs()
+    job = TypesenseLoadJob(str(file_path), "c")
+    job._job_client = _FakeClient(ts)  # type: ignore[assignment]
+    job._job_client.config.client_batch_size = 10  # type: ignore[attr-defined]
+    job._load_table = {"name": "rows", "write_disposition": "append", "columns": {}}
+    job._load_id = "1"
+    job.run()
+    assert first_call_at["n"] == 10  # not 25 — proves no full materialization before first call
+    assert sum(len(chunk) for _, chunk, _ in ts.calls) == 25
+
+
+def test_cross_chunk_partial_failure_accounting(tmp_path) -> None:
+    call = {"n": 0}
+
+    def respond(chunk):
+        call["n"] += 1
+        if call["n"] == 2:
+            # Exactly one failure in chunk 2; other chunks succeed.
+            return [
+                {"success": True},
+                {"success": False, "error": "bad", "document": '{"v":3}'},
+            ]
+        return [{"success": True} for _ in chunk]
+
+    rows = [{"_dlt_id": str(i), "v": i} for i in range(6)]
+    job = _make_job(tmp_path, "c", FakeTs(respond), rows=rows)
+    job._job_client.config.client_batch_size = 2  # type: ignore[attr-defined]
+    with pytest.raises(TypesensePartialImportError) as excinfo:
+        job.run()
+    assert excinfo.value.failed_count == 1
+    assert excinfo.value.total_count == 6
+
+
+def test_error_samples_and_document_detail_truncated(tmp_path) -> None:
+    from dlt_typesense.exceptions import ERROR_DETAIL_MAX_LEN
+    from dlt_typesense.load_jobs import _MAX_ERROR_SAMPLES
+
+    huge_doc = "x" * (ERROR_DETAIL_MAX_LEN + 200)
+
+    def respond(chunk):
+        return [
+            {"success": False, "error": f"err-{i}", "document": huge_doc}
+            for i, _ in enumerate(chunk)
+        ]
+
+    rows = [{"_dlt_id": str(i), "v": i} for i in range(8)]
+    job = _make_job(tmp_path, "c", FakeTs(respond), rows=rows)
+    with pytest.raises(TypesensePartialImportError) as excinfo:
+        job.run()
+    assert excinfo.value.failed_count == 8
+    message = str(excinfo.value)
+    assert message.count("err-") == _MAX_ERROR_SAMPLES
+    # Document sample is truncated in the exception text.
+    assert huge_doc not in message
+
+
+def test_partial_import_error_is_terminal_via_run_managed(tmp_path) -> None:
+    """Wrong base class would mark the job 'retry' and re-import a partial file forever."""
+    from threading import BoundedSemaphore
+
+    from dlt.common.exceptions import TerminalException
+
+    assert issubclass(TypesensePartialImportError, TerminalException)
+
+    def respond(chunk):
+        return [{"success": False, "error": "bad", "document": "{}"} for _ in chunk]
+
+    class CtxClient(_FakeClient):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def prepare_load_job_execution(self, job: Any) -> None:
+            return None
+
+    file_path = _write_jsonl(tmp_path, [{"_dlt_id": "r1", "v": 1}])
+    # RunnableLoadJob requires a recognizable load package filename.
+    running = tmp_path / "rows.1234567890.0.jsonl"
+    file_path.rename(running)
+    job = TypesenseLoadJob(str(running), "c")
+    job._load_table = {"name": "rows", "write_disposition": "append", "columns": {}}
+    job._load_id = "1"
+    job._state = "ready"
+    done = BoundedSemaphore(1)
+    done.acquire()
+    job.run_managed(CtxClient(FakeTs(respond)), done)  # type: ignore[arg-type]
+    assert job.state() == "failed"

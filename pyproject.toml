@@ -22,7 +22,8 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "dlt>=1.9,<2",
+    # Floor is the oldest release that passes our suite; raise as needed.
+    "dlt>=1.20,<2",
     "typesense>=2.0,<3",
     "httpx>=0.27",
 ]
@@ -32,6 +33,12 @@ Homepage = "https://github.com/marcopesani/dlt-typesense"
 Repository = "https://github.com/marcopesani/dlt-typesense"
 Issues = "https://github.com/marcopesani/dlt-typesense/issues"
 
+# Short-name resolution: dlt scans the "dlt" pluggy group and imports
+# `<package>.destinations.<name>` (see DestinationReference.find).
+[project.entry-points."dlt"]
+dlt-typesense = "dlt_typesense"
+
+# Kept for tooling that looks up the destinations group; dlt itself does not.
 [project.entry-points."dlt.destinations"]
 typesense = "dlt_typesense.factory:typesense"
 

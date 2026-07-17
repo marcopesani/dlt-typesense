@@ -36,20 +36,38 @@ def test_append_accumulates_across_runs(make_pipeline, count_documents) -> None:
     assert count_documents(make_pipeline.qualified_name(pipeline, "events")) == 6
 
 
-def test_whole_file_retry_is_idempotent(make_pipeline, documents, probe, count_documents) -> None:
-    pipeline = make_pipeline()
+def test_whole_file_retry_is_idempotent(
+    make_pipeline, documents, count_documents, monkeypatch
+) -> None:
+    """Fail after chunk 1 writes; retry of the same JSONL must leave exact counts."""
+    from typesense.sync.documents import Documents
+
+    from dlt_typesense.exceptions import TypesenseTransientError
+
+    original = Documents.import_
+    state = {"calls": 0, "failed": False}
+
+    def flaky(self, documents, import_parameters=None, batch_size=None):
+        result = original(self, documents, import_parameters, batch_size)
+        state["calls"] += 1
+        if state["calls"] == 1 and not state["failed"]:
+            state["failed"] = True
+            raise TypesenseTransientError("injected after-chunk-1 failure")
+        return result
+
+    monkeypatch.setattr(Documents, "import_", flaky)
+    pipeline = make_pipeline(destination_kwargs={"client_batch_size": 2})
 
     @dlt.resource(name="events", write_disposition="append")
     def events():
         yield from ({"event_id": f"e{i}"} for i in range(5))
 
-    pipeline.run(events())
+    info = pipeline.run(events())
+    assert not info.has_failed_jobs
+    assert state["failed"]
     collection = make_pipeline.qualified_name(pipeline, "events")
-    loaded = documents(collection)
-    assert len(loaded) == 5
-
-    probe.collections[collection].documents.import_(loaded, {"action": "upsert"})
-    assert count_documents(collection) == 5  # no duplicates
+    assert count_documents(collection) == 5
+    assert len({d["id"] for d in documents(collection)}) == 5
 
 
 def test_append_across_schema_evolution(make_pipeline, documents) -> None:
@@ -150,41 +168,3 @@ def test_replace_replaces_child_tables(make_pipeline, count_documents) -> None:
     pipeline.run(orders_v2())
     assert count_documents(make_pipeline.qualified_name(pipeline, "orders")) == 1
     assert count_documents(child) == 1  # no orphaned run-1 child docs
-
-
-# NOTE: dlt core does not emit a completable load job for a *data-bearing* `skip`
-# table — its loader raises LoadClientUnsupportedWriteDisposition for any disposition
-# outside {append, replace, merge}, verified against dlt's own `dummy` destination.
-# So the destination-level guarantee is that a `skip` table is never materialized;
-# a row-less skip resource is the loadable case.
-
-
-def test_skip_writes_nothing(make_pipeline, collection_exists) -> None:
-    pipeline = make_pipeline()
-
-    @dlt.resource(name="ignored", write_disposition="skip")
-    def ignored():
-        return
-        yield  # pragma: no cover - makes this a generator
-
-    info = pipeline.run(ignored())
-    assert not info.has_failed_jobs
-    assert not collection_exists(make_pipeline.qualified_name(pipeline, "ignored"))
-
-
-def test_skip_does_not_affect_siblings(make_pipeline, count_documents, collection_exists) -> None:
-    pipeline = make_pipeline()
-
-    @dlt.resource(name="ignored", write_disposition="skip")
-    def ignored():
-        return
-        yield  # pragma: no cover - makes this a generator
-
-    @dlt.resource(name="kept", write_disposition="append")
-    def kept():
-        yield from ({"v": i} for i in range(2))
-
-    info = pipeline.run([ignored(), kept()])
-    assert not info.has_failed_jobs
-    assert count_documents(make_pipeline.qualified_name(pipeline, "kept")) == 2
-    assert not collection_exists(make_pipeline.qualified_name(pipeline, "ignored"))

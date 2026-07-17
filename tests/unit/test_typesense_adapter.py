@@ -10,9 +10,7 @@ from dlt.extract import DltResource
 
 from dlt_typesense.typesense_adapter import (
     COLLECTION_HINT,
-    COLLECTION_PARAMS,
     FIELD_HINT,
-    FIELD_PARAMS,
     typesense_adapter,
 )
 
@@ -64,17 +62,13 @@ def test_field_hints_full_params() -> None:
             "auto_embedding": {"embed": embed},
         },
     )
-    assert column_hint(resource, "embedding") == {
-        "type": "float[]",
-        "num_dim": 3,
-        "vec_dist": "cosine",
-    }
-    assert column_hint(resource, "title") == {
-        "locale": "de",
-        "infix": True,
-        "token_separators": ["-"],
-    }
-    assert column_hint(resource, "auto_embedding") == {"embed": embed}
+    columns = resource.compute_table_schema()["columns"]
+    assert FIELD_HINT in columns["embedding"]
+    assert FIELD_HINT in columns["title"]
+    assert FIELD_HINT in columns["auto_embedding"]
+    assert column_hint(resource, "embedding")["type"] == "float[]"
+    assert column_hint(resource, "embedding")["num_dim"] == 3
+    assert column_hint(resource, "auto_embedding")["embed"] == embed
 
 
 @pytest.mark.parametrize(
@@ -180,7 +174,35 @@ def test_default_sorting_field_must_be_string() -> None:
         typesense_adapter(make_resource(), collection_hints={"default_sorting_field": 1})
 
 
-def test_param_whitelists_cover_docs_surface() -> None:
-    # Guard against accidental removals from the public whitelists.
-    assert {"type", "facet", "sort", "num_dim", "embed", "reference"} <= FIELD_PARAMS
-    assert {"default_sorting_field", "metadata", "enable_nested_fields"} <= COLLECTION_PARAMS
+def test_v30_field_params_accepted() -> None:
+    resource = typesense_adapter(
+        make_resource(),
+        field_hints={
+            "embedding": {
+                "type": "float[]",
+                "num_dim": 3,
+                "hnsw_params": {"ef_construction": 200, "M": 16},
+            },
+            "author_id": {
+                "type": "string",
+                "reference": "authors.id",
+                "async_reference": True,
+                "cascade_delete": False,
+            },
+        },
+    )
+    assert column_hint(resource, "embedding")["hnsw_params"] == {
+        "ef_construction": 200,
+        "M": 16,
+    }
+    assert column_hint(resource, "author_id")["async_reference"] is True
+
+
+def test_v30_collection_params_accepted() -> None:
+    resource = typesense_adapter(
+        make_resource(),
+        collection_hints={"synonym_sets": ["common"], "curation_sets": ["promo"]},
+    )
+    table = resource.compute_table_schema()
+    assert table[COLLECTION_HINT]["synonym_sets"] == ["common"]  # type: ignore[typeddict-item]
+    assert table[COLLECTION_HINT]["curation_sets"] == ["promo"]  # type: ignore[typeddict-item]

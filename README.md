@@ -4,34 +4,11 @@
 [![PyPI](https://img.shields.io/pypi/v/dlt-typesense.svg)](https://pypi.org/project/dlt-typesense/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://github.com/marcopesani/dlt-typesense/blob/main/LICENSE)
 
-**Typesense document destination for [dlt](https://dlthub.com)** — load data into Typesense collections with proper write dispositions (`append`, `replace`, `merge`/`upsert`), not as a blind reverse-ETL sink.
+Typesense document destination for [dlt](https://dlthub.com). Load data into
+Typesense collections with proper write dispositions (`append`, `replace`,
+`merge`/`upsert`), not as a blind reverse-ETL sink.
 
-## Why a full destination?
-
-Typesense is treated as a **document database**. dlt tables map to Typesense
-collections (dataset-qualified, e.g. `catalog_products`); rows become documents
-loaded via streamed JSONL [bulk import](https://typesense.org/docs/latest/api/documents.html#import-documents).
-
-| Disposition | Behavior |
-|-------------|----------|
-| `append` | Bulk import; document `id` from `_dlt_id`; `action=upsert` |
-| `replace` (`truncate-and-insert`) | Drop + recreate the collection, then import |
-| `merge` (`upsert`) | Upsert keyed by `primary_key` → deterministic Typesense `id` (uuid5) |
-| `merge` (`insert-only`) | Insert keyed by `_dlt_id`; existing documents never modified |
-| `skip` | Nothing is written for that table |
-
-Merge strategies are `["upsert", "insert-only"]` (upsert is the default). The
-`delete-insert` and `scd2` merge strategies and the staging replace strategies
-(`insert-from-staging`, `staging-optimized`) are **not supported** and are
-rejected with a clear capabilities error — there is no SQL layer or staging
-dataset. This matches dlt's non-SQL destinations (Qdrant; `insert-only` follows
-LanceDB): `JobClientBase` + JSONL load jobs + `WithStateSync` for incremental
-pipelines. Suitable for multi-million-row syncs via file sharding and parallel
-import jobs.
-
-See [docs/architecture.md](https://github.com/marcopesani/dlt-typesense/blob/main/docs/architecture.md) for module seams and scale notes.
-
-## Install
+## Install dlt with Typesense
 
 ```bash
 pip install dlt-typesense
@@ -51,7 +28,39 @@ cd dlt-typesense
 uv sync --group dev
 ```
 
-## Usage
+## Destination capabilities
+
+| Feature | Value |
+|---------|-------|
+| Preferred loader file format | `jsonl` |
+| Supported loader file formats | `jsonl` |
+| Has case sensitive identifiers | True |
+| Supported merge strategies | `upsert` (default), `insert-only` |
+| Supported replace strategies | `truncate-and-insert` |
+| Max identifier length | 255 |
+
+`delete-insert` and `scd2` merge strategies and staging replace strategies
+(`insert-from-staging`, `staging-optimized`) are **not supported** — there is
+no SQL layer or staging dataset.
+
+## Setup guide
+
+1. Install the package (see above).
+2. Add credentials to `.dlt/secrets.toml` (or the matching
+   `DESTINATION__TYPESENSE__CREDENTIALS__*` env vars). The `api_key` is
+   required; without it the run fails before any load starts. The key is never
+   written to logs, reprs, or error messages.
+
+```toml
+[destination.typesense.credentials]
+host = "localhost"      # default: localhost
+port = 8108             # default: 8108
+protocol = "http"       # default: http
+api_key = "local-dev-key"
+```
+
+3. Define a resource and a pipeline. The destination resolves by short name
+   (`destination="typesense"`) or by importing the factory:
 
 ```python
 import dlt
@@ -63,23 +72,27 @@ def products():
 
 pipeline = dlt.pipeline(
     pipeline_name="shop",
-    destination=typesense(),
+    destination=typesense(),          # or destination="typesense"
     dataset_name="catalog",
 )
 pipeline.run(products())
 ```
 
-Runnable examples are in [`examples/`](https://github.com/marcopesani/dlt-typesense/tree/main/examples).
-Start a local server with `docker compose up -d` first.
+4. Start a local Typesense with `docker compose up -d` and run the examples in
+   [`examples/`](https://github.com/marcopesani/dlt-typesense/tree/main/examples).
 
-### Schema customization (`typesense_adapter`)
+## `typesense_adapter`
 
 By default collections use Typesense auto schema (a `.*` catch-all field).
 `typesense_adapter` pins explicit typed fields for hinted columns and sets
-collection-level options, covering the full
-[Typesense collections API](https://typesense.org/docs/30.2/api/collections.html)
-surface. Unhinted columns still fall through to `.*` auto, so schema evolution
-keeps working.
+collection-level options. Unhinted columns still fall through to `.*` auto.
+
+**A `type` hint is a contract about both the schema and the document value.**
+When you pin a dlt `timestamp`/`date` column to `int64`/`int32`, the load job
+stores Unix epoch seconds (Typesense's recommended date representation —
+range-filterable and sortable). When you pin a `decimal`/`wei` column to
+`float`/`int64`/`int32`, the exact decimal string on the wire is parsed to that
+numeric type. Apply the adapter to individual resources, not to a whole source.
 
 ```python
 from dlt_typesense import typesense, typesense_adapter
@@ -91,8 +104,10 @@ pipeline.run(
         sort=["price", "rating"],              # shorthand for {"sort": True}
         field_hints={
             "description": {"locale": "de", "infix": True},
-            "embedding": {"type": "float[]", "num_dim": 384},   # vector field
-            "summary_vec": {                                    # auto-embedding
+            "last_update": {"type": "int64", "sort": True},  # timestamp → epoch
+            "gltv_eur": {"type": "float", "sort": True},     # decimal → float
+            "embedding": {"type": "float[]", "num_dim": 384},
+            "summary_vec": {
                 "type": "float[]",
                 "embed": {
                     "from": ["title", "description"],
@@ -111,82 +126,171 @@ pipeline.run(
 
 - `field_hints` accepts, per column: `type`, `facet`, `index`, `optional`,
   `sort`, `infix`, `locale`, `stem`, `stem_dictionary`, `num_dim`, `vec_dist`,
-  `reference`, `range_index`, `store`, `truncate_len`, `token_separators`,
+  `hnsw_params`, `reference`, `async_reference`, `cascade_delete`,
+  `range_index`, `store`, `truncate_len`, `token_separators`,
   `symbols_to_index`, `embed`.
 - `collection_hints` accepts: `default_sorting_field`, `token_separators`,
-  `symbols_to_index`, `enable_nested_fields`, `metadata`.
+  `symbols_to_index`, `enable_nested_fields`, `metadata`, `synonym_sets`,
+  `curation_sets`.
 - Unknown parameter names raise `ValueError` when the adapter is called; value
   errors (e.g. a bad `locale` or `vec_dist`) surface as terminal errors from
   the server at load time.
 
-### Credentials
+### Cleaning rows with `add_map`
 
-Credentials resolve from `.dlt/secrets.toml` (or the matching
-`DESTINATION__TYPESENSE__CREDENTIALS__*` env vars). The `api_key` is required;
-without it the run fails with dlt's missing-config error before any load starts.
-The key is never written to logs, reprs, or error messages.
+The type contract never auto-parses `text` columns into arrays or numbers —
+that is data cleaning. Decode JSON-encoded strings (e.g. Redshift SUPER) with
+dlt's native `add_map` before loading:
 
-```toml
-[destination.typesense.credentials]
-host = "localhost"      # default: localhost
-port = 8108             # default: 8108
-protocol = "http"       # default: http
-api_key = "local-dev-key"
+```python
+import json as pyjson
+
+def clean_row(row: dict) -> dict:
+    raw = row.get("categories")
+    row["categories"] = pyjson.loads(raw) if isinstance(raw, str) else (raw or [])
+    row.setdefault("receive_marketing", False)
+    return row
+
+resource.add_map(clean_row)
+
+pipeline.run(
+    typesense_adapter(
+        resource,
+        field_hints={"categories": {"type": "string[]", "facet": True}},
+    )
+)
 ```
 
-### Configuration knobs
+`add_map` sees whatever shape the source yields. With
+`sql_database(backend="pyarrow")` items are Arrow tables, not dicts — either
+use `backend="sqlalchemy"` for row-shaped items, or map the table
+(`table.to_pylist()` inside an `add_yield_map`). See
+[`examples/sql_incremental_sync_pipeline.py`](examples/sql_incremental_sync_pipeline.py).
+
+## Write disposition
+
+### Replace
+
+`truncate-and-insert`: drop and recreate the collection, then import. A
+concurrent reader can observe an empty collection window mid-replace.
+
+### Merge
+
+- `upsert` (default): document `id` is a deterministic uuid5 of the
+  `primary_key` (or user `unique` columns). Re-runs update existing documents.
+- `insert-only`: document `id` from `_dlt_id`; existing documents are never
+  modified.
+
+Set merge (and the primary key) from the first run; otherwise later merges
+cannot reconcile documents created under append semantics. A merge table with
+neither a `primary_key` nor a `unique` column fails terminally rather than
+silently loading duplicates.
+
+Child tables under merge: root documents update in place; orphaned nested-list
+documents are **not** deleted (orphan cleanup is not implemented).
+
+### Append
+
+Bulk import with `action=upsert`; document `id` from `_dlt_id`.
+
+`skip` writes nothing for that table.
+
+## Data loading
+
+Tables map to Typesense collections (dataset-qualified, e.g. `catalog_products`);
+rows become documents loaded via streamed JSONL
+[bulk import](https://typesense.org/docs/latest/api/documents.html#import-documents).
+
+### Data types
+
+| dlt type | Typesense (unhinted) | With numeric `type` hint |
+|----------|----------------------|--------------------------|
+| `text` | `string` | no auto-parse (use `add_map`) |
+| `bigint` | `int64` | as-is |
+| `double` | `float` | as-is |
+| `bool` | `bool` | as-is |
+| `timestamp` / `date` | ISO-8601 `string` | `int64`/`int32` → Unix epoch seconds |
+| `time` | ISO-8601 `string` | — |
+| `decimal` / `wei` | exact `string` | `float`/`int64`/`int32` → parsed number |
+| `binary` | base64 `string` | — |
+| `json` | JSON `string` | native JSON when hinted `float[]`/`string[]`/`object`/… |
+
+Pinning a timestamp to `float` is rejected (Typesense floats are 32-bit and
+lose epoch-second precision). Use `int64` for range filters / sort, or `int32`
+when the column must be `default_sorting_field` (valid until 2038).
+
+### Dataset name
+
+Collection names are `{dataset_name}{dataset_separator}{table_name}`
+(separator defaults to `_`). Empty `dataset_name` yields the bare table name.
+Names longer than 255 characters are truncated with a hash suffix.
+
+### Reserved `id`
+
+Typesense reserves the top-level document `id`, which this destination manages
+(from `_dlt_id` or the merge key). A source column named `id` is renamed to
+`__id` by the naming convention, so its value is preserved and never silently
+overwritten.
+
+### Schema hints lifecycle
+
+Hints apply at collection creation only: first load, every `replace` run, and
+dev-mode/full-refresh runs. Changing hints on an existing `append`/`merge`
+collection has no effect until the collection is recreated (a log line notes
+this). There is no schema PATCH/alter support — the safe path for production
+schema changes is recreate under a new name and switch a collection alias.
+
+## Additional destination options
 
 Passed to `typesense(...)` or resolved from config (`destination.typesense.*`):
 
 | Knob | Default | Purpose |
 |------|---------|---------|
-| `dataset_separator` | `"_"` | Separator between dataset and table in collection names (≤ 255 chars) |
-| `client_batch_size` | `1000` | Documents per HTTP import request (client-side chunking; files are streamed, never buffered whole) |
+| `dataset_separator` | `"_"` | Separator between dataset and table in collection names |
+| `client_batch_size` | `1000` | Documents per HTTP import request (files are streamed, never buffered whole) |
 | `server_batch_size` | `40` | Typesense `batch_size` import query parameter |
 | `import_action` | `"upsert"` | Import action. `emplace` updates only provided fields. **Do not use `create`** — it breaks dlt's whole-file retry idempotency |
-| `connection_timeout_seconds` | `5.0` | Connect timeout |
+| `connection_timeout_seconds` | `5.0` | Connect timeout (on credentials) |
 | `read_timeout_seconds` | `180.0` | Read timeout for long import requests |
+| `max_parallel_load_jobs` | `None` | Optional loader parallelism override |
 
-## Behavior notes
+### Run Typesense locally
 
-- **Auto schema + pinned fields.** Collections are created with a `.*` auto
-  catch-all; columns hinted via `typesense_adapter` are pinned as explicit
-  typed fields ahead of it. Pinned types follow the wire format below unless
-  overridden with a `type` field hint.
-- **Hints apply at collection creation only.** First load, every `replace`
-  run, and dev-mode/full-refresh runs (re)create collections with the current
-  hints. Changing hints on an existing `append`/`merge` collection has no
-  effect until the collection is recreated (a log line notes this). There is
-  no schema PATCH/alter support yet.
-- **`default_sorting_field`** must resolve to a numeric (`int32`/`int64`/
-  `float`) non-optional field — the destination pins it, forces it
-  non-optional, and fails terminally otherwise. Note dlt `decimal`/`timestamp`
-  columns are stored as strings; use a `double`/`bigint` column or override
-  the field `type`. Rows with a null in that column fail at import.
-- **Vector/native fields.** An array or object `type` hint (`float[]`,
-  `string[]`, `object`, `geopoint`, …) marks the dlt column as `json` so lists
-  stay inline instead of becoming child collections, and the value is imported
-  as native JSON rather than a string — this is how `num_dim` vectors work
-  end-to-end. With `import_action="emplace"`, partial updates that omit a
-  non-optional pinned field are rejected by the server.
-- **Auto-embedding (`embed`) fields** make the server download the model at
-  collection creation — expect a slow first create.
-- **Child tables under merge.** Merge updates root documents in place. When
-  nested-list items disappear from the source, orphaned child-table documents
-  are not deleted. Root documents stay correct.
-- **Reserved `id`.** Typesense reserves the top-level document `id`, which this
-  destination manages (from `_dlt_id` or the merge key). A *source* column named
-  `id` is renamed to `__id` by the naming convention, so its value is preserved
-  and never silently overwritten.
-- **Type representations.** dlt's JSONL wire format is stored as-is under auto
-  schema: `decimal`/`wei` as exact strings, `timestamp`/`date`/`time` as
-  ISO-8601 strings, `binary` as base64, `json` columns as one canonical JSON
-  string. Bigints round-trip exactly as Typesense int64.
-- **Merge without a key.** A `merge` table with neither a `primary_key` nor a
-  `unique` column cannot form a deterministic id and fails with a terminal
-  error rather than silently loading duplicates.
-- **Replace is drop + recreate.** A concurrent reader can observe an empty
-  collection window mid-replace.
+```bash
+docker compose up -d   # Typesense 30.2, API key local-dev-key
+```
+
+## Production pattern: incremental SQL sync
+
+Real syncs look like `sql_database` + incremental cursor + merge + hints +
+optional `add_map`. A declarative multi-collection config keeps each sync
+spec in one place:
+
+```python
+COLLECTIONS = [
+    {
+        "collection": "users",
+        "source": {"table": "user_stats"},
+        "primary_key": "user_id",
+        "timestamp_field": "last_update",
+        "field_hints": {"last_update": {"type": "int64", "sort": True}},
+        "transform": decode_categories,
+    },
+]
+```
+
+See [`examples/sql_incremental_sync_pipeline.py`](examples/sql_incremental_sync_pipeline.py)
+for a runnable SQLite version with `--target`, `--limit`, `--full-refresh`,
+and `--dev-mode`.
+
+### dbt support
+
+The Typesense destination does not support dbt.
+
+### Syncing of `dlt` state
+
+The Typesense destination supports syncing of the `dlt` state (incremental
+cursors survive clean runners).
 
 ## Development
 
@@ -201,9 +305,13 @@ docker compose up -d          # start Typesense for integration tests
 uv run pytest -m integration  # integration tests (fail, never skip, if unreachable)
 ```
 
+See [docs/architecture.md](docs/architecture.md) for module seams and scale notes.
+
 ## Contributing
 
-See [CONTRIBUTING.md](https://github.com/marcopesani/dlt-typesense/blob/main/CONTRIBUTING.md). By contributing you agree to the [Developer Certificate of Origin](https://developercertificate.org/) (sign off commits with `Signed-off-by`).
+See [CONTRIBUTING.md](https://github.com/marcopesani/dlt-typesense/blob/main/CONTRIBUTING.md).
+By contributing you agree to the [Developer Certificate of Origin](https://developercertificate.org/)
+(sign off commits with `Signed-off-by`).
 
 ## License
 

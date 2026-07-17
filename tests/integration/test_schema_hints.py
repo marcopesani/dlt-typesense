@@ -43,7 +43,9 @@ def test_default_sorting_field_end_to_end(make_pipeline, probe, documents) -> No
 
     @dlt.resource(name="ranked", write_disposition="append")
     def ranked():
-        yield from ({"name": f"n{i}", "rank": i} for i in range(3))
+        yield {"name": "n0", "rank": 0}
+        yield {"name": "n1", "rank": 1}
+        yield {"name": "n2", "rank": 2}
 
     pipeline.run(typesense_adapter(ranked(), collection_hints={"default_sorting_field": "rank"}))
 
@@ -53,7 +55,10 @@ def test_default_sorting_field_end_to_end(make_pipeline, probe, documents) -> No
     fields = {field["name"]: field for field in schema["fields"]}
     assert fields["rank"]["optional"] is False
     assert fields["rank"]["type"] == "int64"
-    assert len(documents(collection)) == 3
+    docs = {d["name"]: d for d in documents(collection)}
+    assert docs["n0"]["rank"] == 0 and docs["n1"]["rank"] == 1 and docs["n2"]["rank"] == 2
+    ordered = documents(collection, sort_by="rank:desc")
+    assert [d["name"] for d in ordered] == ["n2", "n1", "n0"]
 
 
 def test_vector_field_round_trip(make_pipeline, probe, documents) -> None:
@@ -121,8 +126,18 @@ def test_replace_reapplies_hints_on_recreate(make_pipeline, probe) -> None:
     assert field_map(probe, collection)["kind"]["facet"] is False
 
 
-def test_hints_not_applied_to_existing_append_collection(make_pipeline, probe) -> None:
+def test_hints_not_applied_to_existing_append_collection(make_pipeline, probe, monkeypatch) -> None:
     """Create-time-only semantics: changed hints do not alter a live collection."""
+    from dlt.common import logger as dlt_logger
+
+    logged: list[str] = []
+    original_info = dlt_logger.info
+
+    def capturing_info(msg: object, *args: object, **kwargs: object) -> None:
+        logged.append(str(msg) % args if args else str(msg))
+        return original_info(msg, *args, **kwargs)
+
+    monkeypatch.setattr(dlt_logger, "info", capturing_info)
     pipeline = make_pipeline()
 
     def run(**adapter_kwargs) -> None:
@@ -140,6 +155,7 @@ def test_hints_not_applied_to_existing_append_collection(make_pipeline, probe) -
     fields = field_map(probe, collection)
     assert fields["level"]["facet"] is True  # unchanged: schema was not altered
     assert "sort" not in fields["level"] or fields["level"]["sort"] is False
+    assert any("were not re-applied" in line for line in logged)
 
 
 def test_default_sorting_field_on_text_column_fails_terminally(make_pipeline) -> None:
@@ -154,3 +170,45 @@ def test_default_sorting_field_on_text_column_fails_terminally(make_pipeline) ->
             typesense_adapter(bad_sort(), collection_hints={"default_sorting_field": "title"})
         )
     assert "must be one of" in str(excinfo.value)
+
+
+def test_vector_dim_mismatch_surfaces_partial_import_error(make_pipeline) -> None:
+    from dlt.pipeline.exceptions import PipelineStepFailed
+
+    from dlt_typesense.exceptions import TypesensePartialImportError
+
+    pipeline = make_pipeline()
+
+    @dlt.resource(name="embedded", write_disposition="append")
+    def embedded():
+        yield {"doc": "a", "embedding": [0.1, 0.2]}  # num_dim=3 expects 3
+
+    with pytest.raises(PipelineStepFailed) as excinfo:
+        pipeline.run(
+            typesense_adapter(
+                embedded(), field_hints={"embedding": {"type": "float[]", "num_dim": 3}}
+            )
+        )
+    cause: BaseException | None = excinfo.value
+    saw_partial = False
+    while cause is not None:
+        if isinstance(cause, TypesensePartialImportError):
+            saw_partial = True
+            assert cause.failed_count >= 1
+            assert cause.total_count >= 1
+            break
+        cause = cause.__cause__
+    assert saw_partial, "dim mismatch must surface TypesensePartialImportError"
+
+
+def test_object_hint_keeps_nested_dict(make_pipeline, documents) -> None:
+    pipeline = make_pipeline()
+
+    @dlt.resource(name="products", write_disposition="append")
+    def products():
+        yield {"sku": "A1", "attrs": {"color": "red", "size": "M"}}
+
+    pipeline.run(typesense_adapter(products(), field_hints={"attrs": {"type": "object"}}))
+    doc = documents(make_pipeline.qualified_name(pipeline, "products"))[0]
+    assert isinstance(doc["attrs"], dict)
+    assert doc["attrs"]["color"] == "red"

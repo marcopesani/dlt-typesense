@@ -23,11 +23,10 @@ def _our_caps() -> DestinationCapabilitiesContext:
 
 
 def test_merge_id_is_deterministic_across_runs() -> None:
+    # Golden pin: namespace/encoding must never change or every upsert duplicates.
     row = {"sku": "A1", "title": "Widget", "_dlt_id": "row-1"}
-    id_first = _job()._document_id(row, ["sku"])
-    id_second = _job()._document_id(row, ["sku"])
-    assert id_first == id_second
-    assert _job()._document_id({"sku": "A2"}, ["sku"]) != id_first
+    assert _job()._document_id(row, ["sku"]) == "d93899e3-6e93-57c0-94a1-d6905be62c70"
+    assert _job()._document_id({"sku": "A2"}, ["sku"]) != "d93899e3-6e93-57c0-94a1-d6905be62c70"
 
 
 def test_merge_id_depends_on_collection() -> None:
@@ -42,6 +41,14 @@ def test_compound_primary_key() -> None:
     c = job._document_id({"tenant": "t1", "sku": "A1"}, ["tenant", "sku"])
     assert a == c  # same tuple -> same id
     assert a != b  # differ in one component -> distinct
+
+
+def test_compound_key_json_encoding_prevents_ambiguity() -> None:
+    """["a_b","c"] must not collide with ["a","b_c"] (docstring contract)."""
+    from dlt_typesense.load_jobs import merge_document_id
+
+    assert merge_document_id("c", ["a_b", "c"]) != merge_document_id("c", ["a", "b_c"])
+    assert merge_document_id("c", ["a_b", "c"]) == "7d62c874-ddc4-5b1a-b523-ec3f2bef90fb"
 
 
 def test_id_from_dlt_id_when_no_key() -> None:
@@ -182,10 +189,27 @@ def test_id_fields_unique_fallback_excludes_dlt_id() -> None:
 
 def test_document_id_rejects_null_merge_key() -> None:
     job = _job()
-    with pytest.raises(TypesenseImportError):
+    with pytest.raises(TypesenseImportError, match="sku") as excinfo:
         job._document_id({"sku": None, "_dlt_id": "r"}, ["sku"])
-    with pytest.raises(TypesenseImportError):
+    assert "catalog_products" in str(excinfo.value)
+    with pytest.raises(TypesenseImportError, match="sku"):
         job._document_id({"_dlt_id": "r"}, ["sku"])  # missing key column
+
+
+def test_empty_string_dlt_id_and_merge_key_are_accepted() -> None:
+    # `is not None` check: empty string is a legal (if unwise) id component.
+    assert _job()._document_id({"_dlt_id": ""}, None) == ""
+    assert isinstance(_job()._document_id({"sku": ""}, ["sku"]), str)
+
+
+def test_id_fields_nested_table_uses_dlt_id() -> None:
+    table = {
+        "name": "products__items",
+        "write_disposition": "merge",
+        "parent": "products",
+        "columns": {"sku": {"name": "sku", "primary_key": True, "data_type": "text"}},
+    }
+    assert _job()._id_fields(table) is None
 
 
 def test_id_fields_insert_only_uses_dlt_id() -> None:
