@@ -1,7 +1,9 @@
 """Load jobs that push JSONL packages into Typesense collections.
 
-Merge updates root documents in place. Nested-list (child) tables under merge
-leave stale child documents behind — orphan cleanup is not implemented.
+Merge (upsert) updates root documents in place. Once every job of a merge
+table chain has completed, a follow-up ``TypesenseRemoveOrphansJob`` deletes
+orphaned nested-table (child) documents — rows that disappeared from a
+re-loaded root row's nested lists (lancedb precedent).
 """
 
 from __future__ import annotations
@@ -11,11 +13,20 @@ import uuid
 from collections.abc import Iterable, Iterator, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
+from dlt.common import logger
 from dlt.common.destination.client import HasFollowupJobs, RunnableLoadJob
 from dlt.common.destination.utils import resolve_merge_strategy
 from dlt.common.json import json as dlt_json
-from dlt.common.schema.utils import get_columns_names_with_prop, is_nested_table
-from dlt.common.storages import FileStorage
+from dlt.common.schema.utils import (
+    get_columns_names_with_prop,
+    get_nested_tables,
+    get_root_table,
+    is_nested_table,
+)
+from dlt.common.storages import FileStorage, ParsedLoadJobFileName
+from dlt.destinations.job_impl import ReferenceFollowupJobRequest
+from dlt.destinations.sql_jobs import SqlMergeFollowupJob
+from typesense.exceptions import ObjectNotFound
 
 from dlt_typesense.exceptions import (
     ERROR_DETAIL_MAX_LEN,
@@ -31,6 +42,11 @@ if TYPE_CHECKING:
     from dlt_typesense.typesense_client import TypesenseClient
 
 _MAX_ERROR_SAMPLES = 5
+
+# Ids per orphan-cleanup filter. dlt ids are ~14 chars (~18 bytes quoted), so
+# each `filter_by` stays under ~4 KB — well below URL length limits (export and
+# delete-by-filter are GET/DELETE requests; there is no request-body variant).
+_ORPHAN_BATCH_SIZE = 200
 
 # Fixed uuid5 namespace — must never change or merge ids stop matching.
 _ID_NAMESPACE = uuid.NAMESPACE_DNS
@@ -221,3 +237,189 @@ class TypesenseLoadJob(RunnableLoadJob, HasFollowupJobs):
             f"'{table.get('name')}' declares neither. Add a primary_key, mark a column unique, or "
             "use the insert-only merge strategy."
         )
+
+
+class TypesenseRemoveOrphansJob(RunnableLoadJob):
+    """Delete orphaned nested-table documents after a merge (upsert) chain load.
+
+    Scheduled by ``TypesenseClient.create_table_chain_completed_followup_jobs``
+    as a ``reference`` job whose payload is the list of the chain's completed
+    JSONL job files. The cleanup contract:
+
+    - Root ids are the ``_dlt_id`` values found in the root-table files. Under
+      the upsert strategy dlt derives them from the primary key (``key_hash``),
+      so a re-loaded source row always produces the same root id.
+    - For every nested table, a document is an orphan when its ``_dlt_root_id``
+      belongs to a root row of this load but its ``_dlt_id`` was not re-written
+      by it — the element disappeared from the parent's nested list.
+    - Root rows *not* part of this load are never touched, so incremental
+      loads only clean up the parents they actually re-synced.
+
+    Orphans are found by exporting the current child ids per batch of root ids
+    and diffing against the loaded ids, then deleted with id-list filters. All
+    requests are bounded by ``_ORPHAN_BATCH_SIZE``, and re-running the whole
+    job after a partial failure converges (deletes are idempotent).
+    """
+
+    def __init__(self, file_path: str) -> None:
+        super().__init__(file_path)
+        self.references = ReferenceFollowupJobRequest.resolve_references(file_path)
+
+    @property
+    def _client(self) -> TypesenseClient:
+        return self._job_client  # type: ignore[return-value]
+
+    def run(self) -> None:
+        files_by_table: dict[str, list[str]] = {}
+        for file_path in self.references:
+            table_name = ParsedLoadJobFileName.parse(file_path).table_name
+            files_by_table.setdefault(table_name, []).append(file_path)
+
+        root_table = get_root_table(self._schema.tables, self._load_table["name"] or "")
+        root_name = root_table["name"] or ""
+        root_ids = self._loaded_root_ids(root_name, files_by_table.get(root_name, []))
+        if not root_ids:
+            return
+
+        for table in get_nested_tables(self._schema.tables, root_name):
+            table_name = table["name"] or ""
+            if table_name == root_name:
+                continue
+            self._remove_table_orphans(
+                root_name, table_name, root_ids, files_by_table.get(table_name, [])
+            )
+
+    def _loaded_root_ids(self, root_name: str, file_paths: list[str]) -> set[str]:
+        """Row keys (``_dlt_id``) of every root row written by this load."""
+        prepared_root = self._client.prepare_load_table(root_name)
+        dataset_name = self._client.dataset_name
+        row_key_col = SqlMergeFollowupJob.get_row_key_col(
+            [prepared_root], prepared_root, dataset_name, dataset_name
+        )
+        root_ids: set[str] = set()
+        for file_path in file_paths:
+            for row in _iter_jsonl_rows(file_path):
+                value = row.get(row_key_col)
+                if value is None:
+                    raise TypesenseImportError(
+                        f"Root table '{root_name}': row is missing '{row_key_col}', so orphaned "
+                        "nested documents cannot be identified for this load."
+                    )
+                root_ids.add(str(value))
+        return root_ids
+
+    def _remove_table_orphans(
+        self,
+        root_name: str,
+        table_name: str,
+        root_ids: set[str],
+        file_paths: list[str],
+    ) -> None:
+        client = self._client
+        dataset_name = client.dataset_name
+        prepared_root = client.prepare_load_table(root_name)
+        prepared = client.prepare_load_table(table_name)
+        chain = [prepared_root, prepared]
+        # `_dlt_root_id` (root_key) requires dlt's root key propagation, which is
+        # on by default for merge. If a pipeline disabled it, this raises a
+        # terminal MergeDispositionException — opt out of cleanup instead with
+        # `typesense_adapter(resource, no_remove_orphans=True)`.
+        root_key_col = SqlMergeFollowupJob.get_root_key_col(
+            chain, prepared, dataset_name, dataset_name
+        )
+        row_key_col = SqlMergeFollowupJob.get_row_key_col(
+            chain, prepared, dataset_name, dataset_name
+        )
+
+        # ids written by this load, grouped by the root row they belong to;
+        # tables whose lists were emptied have no files and therefore no ids.
+        loaded_ids: dict[str, set[str]] = {}
+        for file_path in file_paths:
+            for row in _iter_jsonl_rows(file_path):
+                root_id = row.get(root_key_col)
+                row_id = row.get(row_key_col)
+                if root_id is None or row_id is None:
+                    raise TypesenseImportError(
+                        f"Nested table '{table_name}': row is missing '{root_key_col}' or "
+                        f"'{row_key_col}', so orphaned documents cannot be identified."
+                    )
+                loaded_ids.setdefault(str(root_id), set()).add(str(row_id))
+
+        collection_name = client.make_qualified_collection_name(table_name)
+        ts = client.ts
+        assert ts is not None, "Typesense client must be open while a job runs"
+        docs_api = ts.collections[collection_name].documents
+
+        deleted = 0
+        for root_batch in _chunked(sorted(root_ids), _ORPHAN_BATCH_SIZE):
+            try:
+                export = docs_api.export(
+                    cast(
+                        "Any",
+                        {
+                            "filter_by": _in_filter(root_key_col, root_batch),
+                            "include_fields": row_key_col,
+                        },
+                    )
+                )
+            except ObjectNotFound:
+                # Collection missing, or no document ever defined the filter
+                # field — either way there is nothing to clean up.
+                return
+            except TYPESENSE_ERRORS as exc:
+                raise map_typesense_error(exc, f"orphan export from '{collection_name}'") from exc
+
+            existing: set[str] = set()
+            for line in export.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                value = json.loads(line).get(row_key_col)
+                if value is not None:
+                    existing.add(str(value))
+
+            loaded_in_batch: set[str] = set()
+            for root_id in root_batch:
+                loaded_in_batch.update(loaded_ids.get(root_id, ()))
+
+            for stale_batch in _chunked(sorted(existing - loaded_in_batch), _ORPHAN_BATCH_SIZE):
+                try:
+                    response = docs_api.delete(
+                        cast("Any", {"filter_by": _in_filter(row_key_col, stale_batch)})
+                    )
+                except TYPESENSE_ERRORS as exc:
+                    raise map_typesense_error(
+                        exc, f"orphan delete from '{collection_name}'"
+                    ) from exc
+                deleted += int(response.get("num_deleted", 0))
+
+        if deleted:
+            logger.info(
+                f"Removed {deleted} orphaned document(s) from collection "
+                f"'{collection_name}' (load {self._load_id})."
+            )
+
+
+def _iter_jsonl_rows(file_path: str) -> Iterator[dict[str, Any]]:
+    with FileStorage.open_zipsafe_ro(file_path) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                yield json.loads(line)
+
+
+def _in_filter(field: str, values: Sequence[str]) -> str:
+    """Typesense exact-match IN filter with backtick-quoted literals.
+
+    dlt ids are base64 and may contain ``+``/``/``, so every value is quoted.
+    Backticks cannot be escaped inside ``field:=[`…`]`` literals; a value
+    containing one is rejected rather than silently matching nothing.
+    """
+    for value in values:
+        if "`" in value:
+            raise TypesenseImportError(
+                f"Cannot build a Typesense filter on '{field}': value {value!r} contains a "
+                "backtick, which cannot be escaped in filter literals."
+            )
+    joined = ",".join(f"`{value}`" for value in values)
+    return f"{field}:=[{joined}]"

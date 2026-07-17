@@ -1,4 +1,4 @@
-"""Merge disposition: upsert and insert-only."""
+"""Merge disposition: upsert, insert-only, and orphan cleanup of nested tables."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from dlt.common.destination.exceptions import DestinationCapabilitiesException
 from dlt.pipeline.exceptions import PipelineStepFailed
 from typesense.sync.documents import Documents
 
+from dlt_typesense import load_jobs, typesense_adapter
 from dlt_typesense.exceptions import TypesenseTransientError
 from dlt_typesense.load_jobs import merge_document_id
 
@@ -247,7 +248,8 @@ def test_insert_only_keys_by_dlt_id_not_primary_key(make_pipeline, documents) ->
     assert second["B2"]["id"] == first["B2"]["id"]
 
 
-def test_merge_leaves_stale_child_documents(make_pipeline, documents, count_documents) -> None:
+def test_merge_removes_orphaned_child_documents(make_pipeline, documents, count_documents) -> None:
+    """A nested-list element dropped from a re-loaded root row is deleted."""
     pipeline = make_pipeline()
 
     @dlt.resource(name="orders", write_disposition="merge", primary_key="order_id")
@@ -264,9 +266,151 @@ def test_merge_leaves_stale_child_documents(make_pipeline, documents, count_docu
 
     pipeline.run(v2())
     assert count_documents(make_pipeline.qualified_name(pipeline, "orders")) == 1
-    # Documented limitation: orphan cleanup is not implemented.
+    assert {d["sku"] for d in documents(child)} == {"a"}
+
+
+def test_merge_removes_children_of_emptied_lists(make_pipeline, count_documents) -> None:
+    """Emptying a nested list removes every child document of that root row."""
+    pipeline = make_pipeline()
+
+    @dlt.resource(name="orders", write_disposition="merge", primary_key="order_id")
+    def initial():
+        yield {"order_id": "o1", "items": [{"sku": "a"}, {"sku": "b"}]}
+
+    pipeline.run(initial())
+    child = make_pipeline.qualified_name(pipeline, "orders__items")
     assert count_documents(child) == 2
+
+    @dlt.resource(name="orders", write_disposition="merge", primary_key="order_id")
+    def v2():
+        yield {"order_id": "o1", "items": []}
+
+    pipeline.run(v2())
+    assert count_documents(make_pipeline.qualified_name(pipeline, "orders")) == 1
+    assert count_documents(child) == 0
+
+
+def test_merge_keeps_children_of_untouched_roots(make_pipeline, documents) -> None:
+    """Cleanup is scoped to the roots of the load; other parents keep their children."""
+    pipeline = make_pipeline()
+
+    @dlt.resource(name="orders", write_disposition="merge", primary_key="order_id")
+    def initial():
+        yield {"order_id": "o1", "items": [{"sku": "a"}, {"sku": "b"}]}
+        yield {"order_id": "o2", "items": [{"sku": "c"}]}
+
+    pipeline.run(initial())
+    child = make_pipeline.qualified_name(pipeline, "orders__items")
+    assert {d["sku"] for d in documents(child)} == {"a", "b", "c"}
+
+    @dlt.resource(name="orders", write_disposition="merge", primary_key="order_id")
+    def incremental():
+        yield {"order_id": "o1", "items": [{"sku": "a"}]}  # o2 not re-synced
+
+    pipeline.run(incremental())
+    assert {d["sku"] for d in documents(child)} == {"a", "c"}
+
+
+def test_merge_orphan_cleanup_spans_nesting_levels(make_pipeline, documents) -> None:
+    """Grandchild documents orphaned by a re-loaded root are deleted too."""
+    pipeline = make_pipeline()
+
+    @dlt.resource(name="orders", write_disposition="merge", primary_key="order_id")
+    def initial():
+        yield {
+            "order_id": "o1",
+            "items": [
+                {"sku": "a", "parts": [{"pn": "p1"}, {"pn": "p2"}]},
+                {"sku": "b", "parts": [{"pn": "p3"}]},
+            ],
+        }
+
+    pipeline.run(initial())
+    items = make_pipeline.qualified_name(pipeline, "orders__items")
+    parts = make_pipeline.qualified_name(pipeline, "orders__items__parts")
+    assert {d["sku"] for d in documents(items)} == {"a", "b"}
+    assert {d["pn"] for d in documents(parts)} == {"p1", "p2", "p3"}
+
+    @dlt.resource(name="orders", write_disposition="merge", primary_key="order_id")
+    def v2():
+        yield {"order_id": "o1", "items": [{"sku": "a", "parts": [{"pn": "p1"}]}]}
+
+    pipeline.run(v2())
+    assert {d["sku"] for d in documents(items)} == {"a"}
+    assert {d["pn"] for d in documents(parts)} == {"p1"}
+
+
+def test_insert_only_merge_keeps_children(make_pipeline, documents) -> None:
+    """insert-only appends and never deletes, so no orphan cleanup runs."""
+    pipeline = make_pipeline()
+
+    @dlt.resource(
+        name="orders",
+        write_disposition={"disposition": "merge", "strategy": "insert-only"},
+        primary_key="order_id",
+    )
+    def initial():
+        yield {"order_id": "o1", "items": [{"sku": "a"}, {"sku": "b"}]}
+
+    pipeline.run(initial())
+    child = make_pipeline.qualified_name(pipeline, "orders__items")
+
+    @dlt.resource(
+        name="orders",
+        write_disposition={"disposition": "merge", "strategy": "insert-only"},
+        primary_key="order_id",
+    )
+    def v2():
+        yield {"order_id": "o1", "items": [{"sku": "a"}]}
+
+    pipeline.run(v2())
     assert {d["sku"] for d in documents(child)} == {"a", "b"}
+
+
+def test_no_remove_orphans_opt_out(make_pipeline, documents) -> None:
+    """typesense_adapter(no_remove_orphans=True) restores the stale-children behavior."""
+    pipeline = make_pipeline()
+
+    @dlt.resource(name="orders", write_disposition="merge", primary_key="order_id")
+    def initial():
+        yield {"order_id": "o1", "items": [{"sku": "a"}, {"sku": "b"}]}
+
+    pipeline.run(typesense_adapter(initial(), no_remove_orphans=True))
+    child = make_pipeline.qualified_name(pipeline, "orders__items")
+    assert {d["sku"] for d in documents(child)} == {"a", "b"}
+
+    @dlt.resource(name="orders", write_disposition="merge", primary_key="order_id")
+    def v2():
+        yield {"order_id": "o1", "items": [{"sku": "a"}]}
+
+    pipeline.run(typesense_adapter(v2(), no_remove_orphans=True))
+    assert {d["sku"] for d in documents(child)} == {"a", "b"}  # "b" left in place
+
+
+def test_orphan_cleanup_batches_large_id_sets(make_pipeline, documents, monkeypatch) -> None:
+    """Cleanup converges when root and stale-id sets span multiple filter batches."""
+    monkeypatch.setattr(load_jobs, "_ORPHAN_BATCH_SIZE", 2)
+    pipeline = make_pipeline()
+
+    @dlt.resource(name="orders", write_disposition="merge", primary_key="order_id")
+    def initial():
+        for order in range(5):
+            yield {
+                "order_id": f"o{order}",
+                "items": [{"sku": f"o{order}-s{item}"} for item in range(3)],
+            }
+
+    pipeline.run(initial())
+    child = make_pipeline.qualified_name(pipeline, "orders__items")
+    assert len(documents(child)) == 15
+
+    @dlt.resource(name="orders", write_disposition="merge", primary_key="order_id")
+    def v2():
+        for order in range(5):
+            yield {"order_id": f"o{order}", "items": [{"sku": f"o{order}-s0"}]}
+
+    pipeline.run(v2())
+    assert {d["sku"] for d in documents(child)} == {f"o{order}-s0" for order in range(5)}
 
 
 def test_upsert_drops_omitted_fields(make_pipeline, documents) -> None:

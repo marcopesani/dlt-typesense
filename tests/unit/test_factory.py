@@ -32,7 +32,8 @@ def test_factory_capabilities() -> None:
     dest = typesense()
     caps = dest._raw_capabilities()
     assert caps.preferred_loader_file_format == "jsonl"
-    assert caps.supported_loader_file_formats == ["jsonl"]
+    # "reference" is internal: it routes the merge orphan-cleanup follow-up job.
+    assert caps.supported_loader_file_formats == ["jsonl", "reference"]
     assert caps.supported_merge_strategies == ["upsert", "insert-only"]
     assert caps.supported_replace_strategies == ["truncate-and-insert"]
     assert caps.max_identifier_length == 255

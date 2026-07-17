@@ -33,7 +33,7 @@ uv sync --group dev
 | Feature | Value |
 |---------|-------|
 | Preferred loader file format | `jsonl` |
-| Supported loader file formats | `jsonl` |
+| Supported loader file formats | `jsonl` (plus dlt's internal `reference` format for cleanup follow-up jobs) |
 | Has case sensitive identifiers | True |
 | Supported merge strategies | `upsert` (default), `insert-only` |
 | Supported replace strategies | `truncate-and-insert` |
@@ -132,6 +132,8 @@ pipeline.run(
 - `collection_hints` accepts: `default_sorting_field`, `token_separators`,
   `symbols_to_index`, `enable_nested_fields`, `metadata`, `synonym_sets`,
   `curation_sets`.
+- `no_remove_orphans=True` disables orphan cleanup of nested-table documents
+  under merge (see [Orphan cleanup](#orphan-cleanup-for-nested-tables)).
 - Unknown parameter names raise `ValueError` when the adapter is called; value
   errors (e.g. a bad `locale` or `vec_dist`) surface as terminal errors from
   the server at load time.
@@ -186,8 +188,46 @@ cannot reconcile documents created under append semantics. A merge table with
 neither a `primary_key` nor a `unique` column fails terminally rather than
 silently loading duplicates.
 
-Child tables under merge: root documents update in place; orphaned nested-list
-documents are **not** deleted (orphan cleanup is not implemented).
+#### Orphan cleanup for nested tables
+
+Nested lists become child collections (`orders` → `orders__items` →
+`orders__items__parts`). Under merge (`upsert`), a follow-up job runs after
+every load and deletes **orphaned child documents** — children whose parent
+row was re-loaded but which were not re-written, i.e. elements that
+disappeared from the parent's nested list:
+
+```python
+pipeline.run(orders())  # o1 has items [a, b]
+pipeline.run(orders())  # o1 now has items [a]  → the "b" document is deleted
+```
+
+Semantics:
+
+- **Scoped to the load.** Only root rows present in the load are cleaned up;
+  children of parents that were not re-synced are never touched, so
+  incremental loads stay incremental.
+- **Emptied lists are handled.** Re-loading a parent whose list became empty
+  deletes all of its child documents.
+- **All nesting levels.** Grandchild collections (and deeper) are cleaned the
+  same way.
+- **Merge `upsert` only.** `insert-only` merge, `append`, and `replace` never
+  run cleanup (`replace` recreates collections instead).
+- **Opt out per resource** with
+  `typesense_adapter(resource, no_remove_orphans=True)` — re-loaded parents
+  then leave stale child documents behind, as in versions before cleanup
+  existed.
+
+How it works: after all files of a merge table chain finish loading, a
+follow-up job collects the loaded root ids (`_dlt_id`) and, per child
+collection, exports the current child ids for those roots
+(`_dlt_root_id` filter), diffs them against the ids just loaded, and deletes
+the stale ones with batched `filter_by` requests (200 ids per request). Cost
+is proportional to the number of children of the re-loaded parents.
+
+Cleanup keys on dlt's system columns only (`_dlt_id`, `_dlt_root_id`), which
+requires root-key propagation — dlt enables it automatically for merge. If
+your pipeline explicitly disables it, the cleanup job fails terminally; opt
+out with `no_remove_orphans=True` instead.
 
 ### Append
 

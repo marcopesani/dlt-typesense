@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from contextlib import suppress
 from types import TracebackType
 from typing import Any, cast
@@ -20,6 +20,7 @@ import typesense
 from dlt.common import logger
 from dlt.common.destination import DestinationCapabilitiesContext
 from dlt.common.destination.client import (
+    FollowupJobRequest,
     JobClientBase,
     LoadJob,
     StateInfo,
@@ -28,6 +29,7 @@ from dlt.common.destination.client import (
 )
 from dlt.common.destination.exceptions import DestinationUndefinedEntity
 from dlt.common.destination.typing import PreparedTableSchema
+from dlt.common.destination.utils import resolve_merge_strategy
 from dlt.common.json import json
 from dlt.common.pendulum import pendulum
 from dlt.common.schema import Schema, TSchemaTables
@@ -37,13 +39,15 @@ from dlt.common.schema.utils import (
     normalize_table_identifiers,
     version_table,
 )
+from dlt.common.storages import FileStorage, LoadJobInfo
+from dlt.destinations.job_impl import ReferenceFollowupJobRequest
 from typesense.exceptions import ObjectAlreadyExists, ObjectNotFound
 
 from dlt_typesense.configuration import TypesenseClientConfiguration
 from dlt_typesense.exceptions import wrap_typesense_error
-from dlt_typesense.load_jobs import TypesenseLoadJob
+from dlt_typesense.load_jobs import TypesenseLoadJob, TypesenseRemoveOrphansJob
 from dlt_typesense.type_mapper import collection_schema_auto, collection_schema_from_table
-from dlt_typesense.typesense_adapter import COLLECTION_HINT, FIELD_HINT
+from dlt_typesense.typesense_adapter import COLLECTION_HINT, FIELD_HINT, NO_REMOVE_ORPHANS_HINT
 
 # dlt 1.28.0 added `force` to JobClientBase.update_stored_schema; older releases
 # reject the kwarg. Probe once so we stay compatible across the declared range.
@@ -264,11 +268,63 @@ class TypesenseClient(JobClientBase, WithStateSync):
         load_id: str,
         restore: bool = False,
     ) -> LoadJob:
+        if ReferenceFollowupJobRequest.is_reference_job(file_path):
+            return TypesenseRemoveOrphansJob(file_path)
         table_name = table["name"] or ""
         return TypesenseLoadJob(
             file_path,
             collection_name=self.make_qualified_collection_name(table_name),
         )
+
+    def create_table_chain_completed_followup_jobs(
+        self,
+        table_chain: Sequence[PreparedTableSchema],
+        completed_table_chain_jobs: Sequence[LoadJobInfo] | None = None,
+    ) -> list[FollowupJobRequest]:
+        """Schedule orphan cleanup once every job of a merge (upsert) chain completed.
+
+        Emits one ``reference`` follow-up job per chain, pointing at the chain's
+        completed JSONL job files; ``TypesenseRemoveOrphansJob`` executes it.
+        """
+        jobs = super().create_table_chain_completed_followup_jobs(
+            table_chain, completed_table_chain_jobs
+        )
+        root_table = table_chain[0]
+        # A chain of one table has no nested tables, hence nothing to orphan.
+        if len(table_chain) > 1 and self._chain_needs_orphan_removal(root_table):
+            chain_jobs = [
+                job
+                for table in table_chain
+                for job in completed_table_chain_jobs or []
+                if job.job_file_info.table_name == table["name"]
+            ]
+            root_jobs = [
+                job for job in chain_jobs if job.job_file_info.table_name == root_table["name"]
+            ]
+            # Without root-table files there are no re-loaded root ids to clean
+            # against, so cleanup would be a no-op.
+            if root_jobs:
+                jobs.append(
+                    ReferenceFollowupJobRequest(
+                        FileStorage.get_file_name_from_file_path(root_jobs[0].file_path),
+                        [job.file_path for job in chain_jobs],
+                    )
+                )
+        return jobs
+
+    def _chain_needs_orphan_removal(self, root_table: PreparedTableSchema) -> bool:
+        if root_table.get("write_disposition") != "merge":
+            return False
+        # Adapter opt-out: typesense_adapter(resource, no_remove_orphans=True).
+        if root_table.get(NO_REMOVE_ORPHANS_HINT):
+            return False
+        # insert-only never re-writes roots, so nothing can orphan.
+        merge_strategy = resolve_merge_strategy(
+            cast("Any", {root_table["name"]: root_table}),
+            cast("Any", root_table),
+            self.capabilities,
+        )
+        return merge_strategy == "upsert"
 
     @wrap_typesense_error
     def complete_load(self, load_id: str) -> None:
