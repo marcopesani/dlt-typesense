@@ -32,7 +32,10 @@ FIELD_PARAMS: frozenset[str] = frozenset(
         "stem_dictionary",
         "num_dim",
         "vec_dist",
+        "hnsw_params",
         "reference",
+        "async_reference",
+        "cascade_delete",
         "range_index",
         "store",
         "truncate_len",
@@ -49,11 +52,24 @@ COLLECTION_PARAMS: frozenset[str] = frozenset(
         "symbols_to_index",
         "enable_nested_fields",
         "metadata",
+        "synonym_sets",
+        "curation_sets",
     }
 )
 
 _BOOL_FIELD_PARAMS = frozenset(
-    {"facet", "index", "optional", "sort", "infix", "stem", "range_index", "store"}
+    {
+        "facet",
+        "index",
+        "optional",
+        "sort",
+        "infix",
+        "stem",
+        "range_index",
+        "store",
+        "async_reference",
+        "cascade_delete",
+    }
 )
 _POSITIVE_INT_FIELD_PARAMS = frozenset({"num_dim", "truncate_len"})
 _STR_LIST_PARAMS = frozenset({"token_separators", "symbols_to_index"})
@@ -74,18 +90,27 @@ def typesense_adapter(
     schema; everything else falls through to the ``.*`` auto field. Hints
     take effect when the collection is created.
 
+    A ``type`` in ``field_hints`` is a contract about both the schema *and*
+    the document value. When a dlt ``timestamp``/``date`` column is pinned to
+    ``int64``/``int32``, the load job stores Unix epoch seconds (Typesense's
+    recommended date representation — range-filterable and sortable). When a
+    ``decimal``/``wei`` column is pinned to ``float``/``int64``/``int32``, the
+    exact decimal string on the wire is parsed to that numeric type. Array and
+    object types (``float[]``, ``string[]``, ``object``, …) keep native JSON
+    values. ``text`` columns are never auto-parsed — decode JSON strings with
+    ``resource.add_map(...)`` before loading.
+
     Args:
         data: A dlt resource or in-memory items.
         facet: Column(s) to mark facetable (shorthand for ``{"facet": True}``).
         sort: Column(s) to mark sortable (shorthand for ``{"sort": True}``).
         index: Column(s) to mark indexed (shorthand for ``{"index": True}``).
         field_hints: Full per-column Typesense field parameters, e.g.
-            ``{"embedding": {"type": "float[]", "num_dim": 384}}``. Merged over
+            ``{"embedding": {"type": "float[]", "num_dim": 384}}`` or
+            ``{"last_update": {"type": "int64", "sort": True}}``. Merged over
             the shorthand params; explicit entries win. See ``FIELD_PARAMS``.
         collection_hints: Collection-level parameters, e.g.
             ``{"default_sorting_field": "price"}``. See ``COLLECTION_PARAMS``.
-            (``synonym_sets``/``curation_sets`` are managed via their own
-            Typesense APIs and are out of scope here.)
 
     Returns:
         The dlt resource with Typesense hints applied.
@@ -95,7 +120,10 @@ def typesense_adapter(
         ...     products,
         ...     facet="category",
         ...     sort=["price", "rating"],
-        ...     field_hints={"description": {"locale": "de", "infix": True}},
+        ...     field_hints={
+        ...         "description": {"locale": "de", "infix": True},
+        ...         "last_update": {"type": "int64", "sort": True},
+        ...     },
         ...     collection_hints={"default_sorting_field": "price"},
         ... )
     """
@@ -186,6 +214,9 @@ def _validate_field_params(column: str, params: dict[str, Any]) -> None:
             f"field_hints['{column}']['embed'] must be a dict with a 'from' key "
             "(and typically 'model_config')."
         )
+    hnsw = params.get("hnsw_params")
+    if hnsw is not None and not isinstance(hnsw, dict):
+        raise ValueError(f"field_hints['{column}']['hnsw_params'] must be a dict.")
 
 
 def _validate_collection_params(params: dict[str, Any]) -> None:
@@ -207,6 +238,9 @@ def _validate_collection_params(params: dict[str, Any]) -> None:
     if metadata is not None and not isinstance(metadata, dict):
         raise ValueError("collection_hints['metadata'] must be a dict.")
     for key in _STR_LIST_PARAMS:
+        if key in params:
+            _require_str_list(f"collection_hints['{key}']", params[key])
+    for key in ("synonym_sets", "curation_sets"):
         if key in params:
             _require_str_list(f"collection_hints['{key}']", params[key])
 

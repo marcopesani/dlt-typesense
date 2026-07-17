@@ -10,6 +10,7 @@ explicitly, everything else falls through to ``.*`` auto.
 from __future__ import annotations
 
 import hashlib
+import inspect
 from collections.abc import Iterable
 from contextlib import suppress
 from types import TracebackType
@@ -43,6 +44,10 @@ from dlt_typesense.exceptions import wrap_typesense_error
 from dlt_typesense.load_jobs import TypesenseLoadJob
 from dlt_typesense.type_mapper import collection_schema_auto, collection_schema_from_table
 from dlt_typesense.typesense_adapter import COLLECTION_HINT, FIELD_HINT
+
+# dlt 1.28.0 added `force` to JobClientBase.update_stored_schema; older releases
+# reject the kwarg. Probe once so we stay compatible across the declared range.
+_BASE_ACCEPTS_FORCE = "force" in inspect.signature(JobClientBase.update_stored_schema).parameters
 
 
 class TypesenseClient(JobClientBase, WithStateSync):
@@ -217,7 +222,10 @@ class TypesenseClient(JobClientBase, WithStateSync):
         expected_update: TSchemaTables = None,  # type: ignore[assignment]
         force: bool = False,
     ) -> TSchemaTables | None:
-        applied_update = super().update_stored_schema(only_tables, expected_update, force)
+        if _BASE_ACCEPTS_FORCE:
+            applied_update = super().update_stored_schema(only_tables, expected_update, force)
+        else:
+            applied_update = super().update_stored_schema(only_tables, expected_update)
         schema_info = self.get_stored_schema_by_hash(self.schema.stored_version_hash)
         if schema_info is None or force:
             logger.info(

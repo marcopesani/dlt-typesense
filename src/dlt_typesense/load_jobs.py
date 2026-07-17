@@ -21,6 +21,7 @@ from dlt_typesense.exceptions import (
     map_typesense_error,
 )
 from dlt_typesense.typesense_adapter import FIELD_HINT
+from dlt_typesense.value_conversion import apply_conversions, converted_fields
 
 if TYPE_CHECKING:
     from dlt_typesense.typesense_client import TypesenseClient
@@ -87,6 +88,7 @@ class TypesenseLoadJob(RunnableLoadJob, HasFollowupJobs):
             )
         id_fields = self._id_fields(self._load_table)
         json_fields = self._json_fields(self._load_table)
+        field_converters = converted_fields(self._load_table)
         ts = self._client.ts
         assert ts is not None, "Typesense client must be open while a job runs"
 
@@ -102,7 +104,8 @@ class TypesenseLoadJob(RunnableLoadJob, HasFollowupJobs):
 
         with FileStorage.open_zipsafe_ro(self._file_path) as f:
             for chunk in _chunked(
-                self._iter_documents(f, id_fields, json_fields), config.client_batch_size
+                self._iter_documents(f, id_fields, json_fields, field_converters),
+                config.client_batch_size,
             ):
                 try:
                     results = docs_api.import_(chunk, cast("Any", params))
@@ -136,7 +139,9 @@ class TypesenseLoadJob(RunnableLoadJob, HasFollowupJobs):
         lines: Iterator[str],
         id_fields: Sequence[str] | None,
         json_fields: Sequence[str],
+        field_converters: dict[str, Any] | None = None,
     ) -> Iterator[dict[str, Any]]:
+        converters = field_converters or {}
         for line in lines:
             line = line.strip()
             if not line:
@@ -148,6 +153,8 @@ class TypesenseLoadJob(RunnableLoadJob, HasFollowupJobs):
             for field_name in json_fields:
                 if field_name in data:
                     data[field_name] = dlt_json.dumps(data[field_name])
+            if converters:
+                apply_conversions(data, converters, collection_name=self._collection_name)
             yield data
 
     def _document_id(self, data: dict[str, Any], id_fields: Sequence[str] | None) -> str:

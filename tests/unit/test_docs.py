@@ -33,6 +33,10 @@ README = (REPO_ROOT / "README.md").read_text().lower()
         "collection_hints",
         "default_sorting_field",
         "facet",
+        "add_map",
+        "unix epoch",
+        'destination="typesense"',
+        "dbt",
     ],
 )
 def test_readme_documents_contract(phrase: str) -> None:

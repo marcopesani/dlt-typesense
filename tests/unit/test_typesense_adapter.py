@@ -182,5 +182,55 @@ def test_default_sorting_field_must_be_string() -> None:
 
 def test_param_whitelists_cover_docs_surface() -> None:
     # Guard against accidental removals from the public whitelists.
-    assert {"type", "facet", "sort", "num_dim", "embed", "reference"} <= FIELD_PARAMS
-    assert {"default_sorting_field", "metadata", "enable_nested_fields"} <= COLLECTION_PARAMS
+    assert {
+        "type",
+        "facet",
+        "sort",
+        "num_dim",
+        "embed",
+        "reference",
+        "hnsw_params",
+        "async_reference",
+        "cascade_delete",
+    } <= FIELD_PARAMS
+    assert {
+        "default_sorting_field",
+        "metadata",
+        "enable_nested_fields",
+        "synonym_sets",
+        "curation_sets",
+    } <= COLLECTION_PARAMS
+
+
+def test_v30_field_params_accepted() -> None:
+    resource = typesense_adapter(
+        make_resource(),
+        field_hints={
+            "embedding": {
+                "type": "float[]",
+                "num_dim": 3,
+                "hnsw_params": {"ef_construction": 200, "M": 16},
+            },
+            "author_id": {
+                "type": "string",
+                "reference": "authors.id",
+                "async_reference": True,
+                "cascade_delete": False,
+            },
+        },
+    )
+    assert column_hint(resource, "embedding")["hnsw_params"] == {
+        "ef_construction": 200,
+        "M": 16,
+    }
+    assert column_hint(resource, "author_id")["async_reference"] is True
+
+
+def test_v30_collection_params_accepted() -> None:
+    resource = typesense_adapter(
+        make_resource(),
+        collection_hints={"synonym_sets": ["common"], "curation_sets": ["promo"]},
+    )
+    table = resource.compute_table_schema()
+    assert table[COLLECTION_HINT]["synonym_sets"] == ["common"]  # type: ignore[typeddict-item]
+    assert table[COLLECTION_HINT]["curation_sets"] == ["promo"]  # type: ignore[typeddict-item]

@@ -34,7 +34,8 @@ DLT_TO_TYPESENSE_TYPE: dict[str, str] = {
     "json": "string",
 }
 
-# Typesense only accepts numeric fields as default_sorting_field.
+# Typesense docs list int32/float; the server also accepts int64 (verified
+# against Typesense 30.x). Strings are never valid as default_sorting_field.
 _SORTABLE_TYPES = ("int32", "int64", "float")
 
 
@@ -122,6 +123,8 @@ def _pin_sorting_field(
         raise TypesenseSchemaError(
             f"Collection '{qualified_name}': default_sorting_field '{field_name}' resolves to "
             f"Typesense type '{field.get('type')}', but must be one of {list(_SORTABLE_TYPES)}. "
-            "Note dlt decimal/timestamp columns are stored as strings; use a double/bigint "
-            "column or override the field type via field_hints."
+            "Use an int32/int64/float column (for timestamps, pin "
+            '`field_hints={...: {"type": "int64"}}` so the load job stores Unix epoch '
+            "seconds), or drop default_sorting_field and sort with per-field "
+            "`sort: true` + an explicit `sort_by` at query time."
         )

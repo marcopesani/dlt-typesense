@@ -38,8 +38,10 @@ factory.py           → Destination entry + capabilities
 configuration.py     → credentials + batch/timeout knobs + official client factory
 typesense_client.py  → storage init, schema update, state sync, create_load_job
 load_jobs.py         → TypesenseLoadJob + chunked import over the official client
+value_conversion.py  → wire-value converters for typed field hints (epoch, decimal)
 type_mapper.py       → collection schema build (typed pinned fields + `.*` auto)
 typesense_adapter.py → per-field + collection-level schema hints
+destinations/        → short-name resolution (destination="typesense")
 exceptions.py        → terminal vs transient error taxonomy + SDK error mapping
 ```
 
@@ -57,7 +59,13 @@ action is restricted to idempotent `upsert`/`emplace`.
   `apply_hints(columns=...)` so it travels with the normalized column name.
 - `x-typesense-collection` (per table) — collection params
   (`default_sorting_field`, `token_separators`, `symbols_to_index`,
-  `enable_nested_fields`, `metadata`), attached via `additional_table_hints`.
+  `enable_nested_fields`, `metadata`, `synonym_sets`, `curation_sets`),
+  attached via `additional_table_hints`.
+
+A `type` in the field hint is a contract about both the schema and the
+document value: the load job converts dlt `timestamp`/`date` wire strings to
+Unix epoch seconds when pinned to `int64`/`int32`, and parses `decimal`/`wei`
+strings when pinned to a numeric Typesense type.
 
 `typesense_client._collection_schema` builds data-table schemas with
 `type_mapper.collection_schema_from_table`: hinted columns become pinned typed
