@@ -1,4 +1,8 @@
-"""Load jobs that push JSONL packages into Typesense collections."""
+"""Load jobs that push JSONL packages into Typesense collections.
+
+Merge updates root documents in place. Nested-list (child) tables under merge
+leave stale child documents behind — orphan cleanup is not implemented.
+"""
 
 from __future__ import annotations
 
@@ -216,21 +220,4 @@ class TypesenseLoadJob(RunnableLoadJob, HasFollowupJobs):
             "column hinted 'unique' to build a deterministic document id, but the table "
             f"'{table.get('name')}' declares neither. Add a primary_key, mark a column unique, or "
             "use the insert-only merge strategy."
-        )
-
-
-class TypesenseRemoveOrphansJob(RunnableLoadJob):
-    """Delete child documents orphaned after a root merge/upsert.
-
-    Not implemented: merge updates root documents only; stale child rows remain.
-    """
-
-    def __init__(self, file_path: str, collection_name: str) -> None:
-        super().__init__(file_path)
-        self._collection_name = collection_name
-
-    def run(self) -> None:
-        raise NotImplementedError(
-            "Child-table orphan cleanup is not implemented; "
-            "merge leaves stale nested-list documents in place."
         )

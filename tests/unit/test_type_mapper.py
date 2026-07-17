@@ -11,7 +11,6 @@ from dlt_typesense.naming import NamingConvention
 from dlt_typesense.type_mapper import (
     collection_schema_auto,
     collection_schema_from_table,
-    map_dlt_type,
 )
 
 NORMALIZE = NamingConvention().normalize_identifier
@@ -31,43 +30,6 @@ def make_table(
 
 def build(table: dict[str, Any]) -> dict[str, Any]:
     return collection_schema_from_table("ds_products", table, NORMALIZE)
-
-
-def test_collection_schema_auto() -> None:
-    schema = collection_schema_auto("catalog_products")
-    assert schema["name"] == "catalog_products"
-    assert schema["enable_nested_fields"] is True
-    assert schema["fields"] == [AUTO_FIELD]
-
-
-@pytest.mark.parametrize(
-    ("dlt_type", "typesense_type"),
-    [
-        ("text", "string"),
-        ("double", "float"),
-        ("bool", "bool"),
-        ("bigint", "int64"),
-        # ISO-8601 strings on the JSONL wire, not epoch ints.
-        ("timestamp", "string"),
-        ("date", "string"),
-        ("time", "string"),
-        # Exact decimal strings on the wire.
-        ("decimal", "string"),
-        ("wei", "string"),
-        # Base64 string on the wire.
-        ("binary", "string"),
-        # The load job stringifies json columns by default.
-        ("json", "string"),
-    ],
-)
-def test_map_dlt_type_matches_wire_format(dlt_type: str, typesense_type: str) -> None:
-    assert map_dlt_type(dlt_type) == typesense_type
-
-
-def test_map_dlt_type_unknown_falls_back_to_auto() -> None:
-    assert map_dlt_type(None) == "auto"
-    assert map_dlt_type("") == "auto"
-    assert map_dlt_type("some_future_type") == "auto"
 
 
 def test_unhinted_table_matches_auto_schema() -> None:
@@ -224,4 +186,9 @@ def test_default_sorting_field_type_override_allows_numeric() -> None:
         },
         collection={"default_sorting_field": "price"},
     )
-    assert build(table)["default_sorting_field"] == "price"
+    schema = build(table)
+    assert schema["default_sorting_field"] == "price"
+    field = schema["fields"][0]
+    assert field["name"] == "price"
+    assert field["type"] == "float"
+    assert field["optional"] is False

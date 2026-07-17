@@ -205,6 +205,15 @@ class TypesenseClient(JobClientBase, WithStateSync):
 
     @wrap_typesense_error
     def drop_storage(self) -> None:
+        """Delete collections owned by this dataset.
+
+        With a non-empty ``dataset_name``, deletes every collection whose name
+        starts with ``{dataset}{separator}``. With an empty dataset name there
+        is no prefix: only collections whose bare name matches a table in the
+        current schema are deleted. Unrelated collections that happen to share
+        those bare names are therefore also removed — prefer a non-empty
+        dataset name in shared Typesense clusters.
+        """
         collections = self._ts.collections.retrieve()
         existing = {c["name"] for c in collections}
         if self.dataset_name:
@@ -393,4 +402,17 @@ def _doc_id(*parts: str) -> str:
 
 
 def _eq_filter(field: str, value: str) -> str:
+    """Build a Typesense equality filter with a backtick-quoted literal.
+
+    Typesense has no escape for backticks inside ``field:=`…` `` literals, so
+    values containing a backtick are rejected rather than silently no-matching
+    (which would make state/schema lookups look empty and reset incremental
+    cursors).
+    """
+    if "`" in value:
+        raise ValueError(
+            f"Typesense filter value for '{field}' contains a backtick, which cannot "
+            "be escaped in field:=`…` literals. Rename the pipeline/schema so the "
+            "value has no backticks."
+        )
     return f"{field}:=`{value}`"

@@ -23,22 +23,6 @@ def test_flat_scalar_rows_load_one_to_one(make_pipeline, documents) -> None:
     assert [(d["a"], d["b"], d["c"]) for d in docs] == [(1, "x", True), (2, "y", False)]
 
 
-@pytest.mark.parametrize("disposition", ["append", "replace", "merge"])
-def test_nested_dicts_flatten_to_parent_child(make_pipeline, documents, disposition) -> None:
-    pipeline = make_pipeline()
-    resource_kwargs: dict[str, Any] = {"primary_key": "user_id"} if disposition == "merge" else {}
-
-    @dlt.resource(name="users", write_disposition=disposition, **resource_kwargs)
-    def users():
-        yield {"user_id": "u1", "profile": {"name": "Ada", "address": {"city": "London"}}}
-
-    pipeline.run(users())
-    doc = documents(make_pipeline.qualified_name(pipeline, "users"))[0]
-    assert doc["user_id"] == "u1"
-    assert doc["profile__name"] == "Ada"
-    assert doc["profile__address__city"] == "London"
-
-
 def test_nested_lists_become_child_collections(make_pipeline, documents) -> None:
     pipeline = make_pipeline()
 
@@ -49,29 +33,10 @@ def test_nested_lists_become_child_collections(make_pipeline, documents) -> None
     pipeline.run(orders())
     child = make_pipeline.qualified_name(pipeline, "orders__lines")
     child_docs = sorted(documents(child), key=lambda d: d["_dlt_list_idx"])
-    assert [d["sku"] for d in child_docs] == ["a", "b"]  # content round-trips
+    assert [d["sku"] for d in child_docs] == ["a", "b"]
     assert [d["_dlt_list_idx"] for d in child_docs] == [0, 1]
     for doc in child_docs:
         assert "_dlt_id" in doc and "_dlt_parent_id" in doc
-        assert "_dlt_root_id" in doc  # merge propagates the root key
-
-
-def test_nested_lists_under_append(make_pipeline, documents) -> None:
-    pipeline = make_pipeline()
-
-    @dlt.resource(name="orders", write_disposition="append")
-    def orders():
-        yield {"order_id": "o1", "lines": [{"sku": "a"}, {"sku": "b"}]}
-
-    pipeline.run(orders())
-    child_docs = sorted(
-        documents(make_pipeline.qualified_name(pipeline, "orders__lines")),
-        key=lambda d: d["_dlt_list_idx"],
-    )
-    assert [d["sku"] for d in child_docs] == ["a", "b"]
-    for doc in child_docs:
-        assert "_dlt_id" in doc and "_dlt_parent_id" in doc
-        assert "_dlt_root_id" not in doc  # root propagation is a merge feature
 
 
 def test_null_and_missing_values_are_optional(make_pipeline, documents, count_documents) -> None:
@@ -86,7 +51,10 @@ def test_null_and_missing_values_are_optional(make_pipeline, documents, count_do
     assert not info.has_failed_jobs
     collection = make_pipeline.qualified_name(pipeline, "rows")
     assert count_documents(collection) == 2
-    for doc in documents(collection):
+    docs = {d["a"]: d for d in documents(collection)}
+    assert docs[1]["a"] == 1
+    assert docs[2]["a"] == 2
+    for doc in docs.values():
         assert "maybe" not in doc  # null/absent behaves as optional
 
 

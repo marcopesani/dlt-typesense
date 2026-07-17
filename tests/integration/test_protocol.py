@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
+
 import dlt
 import pytest
 
@@ -157,6 +159,32 @@ def test_dataset_qualification_and_isolation(make_pipeline, open_client, count_d
     assert count_documents("warehouse_products") == 0
 
 
+def test_drop_storage_empty_dataset_only_matches_schema_tables(
+    make_pipeline, open_client, probe, collection_exists
+) -> None:
+    """Empty dataset_name deletes bare schema-table names only — not unrelated collections."""
+    pipeline = make_pipeline(dataset_name="")
+    sibling = f"unrelated_{pipeline.pipeline_name}"
+    probe.collections.create(
+        {"name": sibling, "fields": [{"name": ".*", "type": "auto"}]}
+    )
+    try:
+
+        @dlt.resource(name="items", write_disposition="append")
+        def items():
+            yield {"v": 1}
+
+        pipeline.run(items())
+        assert collection_exists("items")
+        with open_client(pipeline) as client:
+            client.drop_storage()
+        assert not collection_exists("items")
+        assert collection_exists(sibling)
+    finally:
+        with suppress(Exception):
+            probe.collections[sibling].delete()
+
+
 def test_complete_load_records_load_id(make_pipeline, open_client, probe) -> None:
     pipeline = make_pipeline()
 
@@ -175,3 +203,10 @@ def test_complete_load_records_load_id(make_pipeline, open_client, probe) -> Non
         assert doc[n("status")] == 0  # completed
         assert doc[n("schema_name")] == client.schema.name
         assert doc[n("schema_version_hash")] == client.schema.version_hash
+        # Retries of complete_load upsert by id — no duplicate, no error.
+        client.complete_load(load_id)
+        client.complete_load(load_id)
+        found = probe.collections[loads_collection].documents.search(
+            {"q": "*", "filter_by": f"{n('load_id')}:=`{load_id}`", "per_page": 0}
+        )["found"]
+        assert found == 1

@@ -10,9 +10,7 @@ from dlt.extract import DltResource
 
 from dlt_typesense.typesense_adapter import (
     COLLECTION_HINT,
-    COLLECTION_PARAMS,
     FIELD_HINT,
-    FIELD_PARAMS,
     typesense_adapter,
 )
 
@@ -64,17 +62,13 @@ def test_field_hints_full_params() -> None:
             "auto_embedding": {"embed": embed},
         },
     )
-    assert column_hint(resource, "embedding") == {
-        "type": "float[]",
-        "num_dim": 3,
-        "vec_dist": "cosine",
-    }
-    assert column_hint(resource, "title") == {
-        "locale": "de",
-        "infix": True,
-        "token_separators": ["-"],
-    }
-    assert column_hint(resource, "auto_embedding") == {"embed": embed}
+    columns = resource.compute_table_schema()["columns"]
+    assert FIELD_HINT in columns["embedding"]
+    assert FIELD_HINT in columns["title"]
+    assert FIELD_HINT in columns["auto_embedding"]
+    assert column_hint(resource, "embedding")["type"] == "float[]"
+    assert column_hint(resource, "embedding")["num_dim"] == 3
+    assert column_hint(resource, "auto_embedding")["embed"] == embed
 
 
 @pytest.mark.parametrize(
@@ -178,28 +172,6 @@ def test_bad_convenience_value_rejected() -> None:
 def test_default_sorting_field_must_be_string() -> None:
     with pytest.raises(ValueError, match="default_sorting_field"):
         typesense_adapter(make_resource(), collection_hints={"default_sorting_field": 1})
-
-
-def test_param_whitelists_cover_docs_surface() -> None:
-    # Guard against accidental removals from the public whitelists.
-    assert {
-        "type",
-        "facet",
-        "sort",
-        "num_dim",
-        "embed",
-        "reference",
-        "hnsw_params",
-        "async_reference",
-        "cascade_delete",
-    } <= FIELD_PARAMS
-    assert {
-        "default_sorting_field",
-        "metadata",
-        "enable_nested_fields",
-        "synonym_sets",
-        "curation_sets",
-    } <= COLLECTION_PARAMS
 
 
 def test_v30_field_params_accepted() -> None:

@@ -94,8 +94,19 @@ def _make_temporal_converter(column: str, hint_type: str) -> Callable[[Any], Any
 def _make_decimal_converter(column: str, hint_type: str) -> Callable[[Any], Any]:
     def convert(value: Any) -> int | float:
         number = _to_decimal(value)
+        if not number.is_finite():
+            raise TypesenseImportError(
+                f"Column '{column}': non-finite decimal {value!r} cannot be stored "
+                f"as Typesense '{hint_type}'."
+            )
         if hint_type == "float":
             return float(number)
+        # Refuse fractional values rather than silently truncating (money/qty corruption).
+        if number != number.to_integral_value():
+            raise TypesenseImportError(
+                f"Column '{column}': decimal {value!r} is not an integer; cannot convert "
+                f"to Typesense '{hint_type}' without truncation. Use 'float' or round upstream."
+            )
         as_int = int(number)
         if hint_type == "int32" and (as_int < _INT32_MIN or as_int > _INT32_MAX):
             raise TypesenseImportError(

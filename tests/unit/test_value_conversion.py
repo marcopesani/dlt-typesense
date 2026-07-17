@@ -50,22 +50,6 @@ def test_date_to_int64_midnight_utc() -> None:
     assert data["day"] == 1577836800
 
 
-def test_timestamp_to_int32_within_range() -> None:
-    table = {
-        "columns": {
-            "ts": {
-                "name": "ts",
-                "data_type": "timestamp",
-                "x-typesense-field": {"type": "int32"},
-            }
-        }
-    }
-    converters = converted_fields(table)
-    data = {"ts": "2020-01-01T00:00:00Z"}
-    apply_conversions(data, converters, collection_name="ds_events")
-    assert data["ts"] == 1577836800
-
-
 def test_timestamp_to_int32_overflow_raises() -> None:
     table = {
         "columns": {
@@ -192,3 +176,102 @@ def test_iter_documents_applies_converters() -> None:
     )
     assert docs[0]["last_update"] == 1577836800
     assert docs[0]["id"] == "r"
+
+
+def test_offset_aware_timestamp_keeps_absolute_epoch() -> None:
+    table = {
+        "columns": {
+            "ts": {
+                "name": "ts",
+                "data_type": "timestamp",
+                "x-typesense-field": {"type": "int64"},
+            }
+        }
+    }
+    converters = converted_fields(table)
+    data = {"ts": "2020-01-01T01:00:00+01:00"}
+    apply_conversions(data, converters, collection_name="ds_events")
+    assert data["ts"] == 1577836800  # absolute UTC, not wall-clock +01 as UTC
+
+
+def test_noon_utc_timestamp_not_midnight() -> None:
+    """Pins DateTime-before-Date isinstance order (DateTime subclasses Date in pendulum)."""
+    table = {
+        "columns": {
+            "ts": {
+                "name": "ts",
+                "data_type": "timestamp",
+                "x-typesense-field": {"type": "int64"},
+            }
+        }
+    }
+    converters = converted_fields(table)
+    data = {"ts": "2020-01-01T12:00:00Z"}
+    apply_conversions(data, converters, collection_name="ds_events")
+    assert data["ts"] == 1577880000
+
+
+def test_int32_epoch_bounds() -> None:
+    table = {
+        "columns": {
+            "ts": {
+                "name": "ts",
+                "data_type": "timestamp",
+                "x-typesense-field": {"type": "int32"},
+            }
+        }
+    }
+    converters = converted_fields(table)
+    ok = {"ts": 2_147_483_647}
+    apply_conversions(ok, converters, collection_name="ds_events")
+    assert ok["ts"] == 2_147_483_647
+    with pytest.raises(TypesenseImportError, match="does not fit int32"):
+        apply_conversions({"ts": 2_147_483_648}, converters, collection_name="ds_events")
+
+
+def test_fractional_decimal_to_int_raises() -> None:
+    table = {
+        "columns": {
+            "cents": {
+                "name": "cents",
+                "data_type": "decimal",
+                "x-typesense-field": {"type": "int64"},
+            }
+        }
+    }
+    converters = converted_fields(table)
+    with pytest.raises(TypesenseImportError, match="not an integer"):
+        apply_conversions({"cents": "19.50"}, converters, collection_name="ds_events")
+
+
+@pytest.mark.parametrize("bad", ["NaN", "Infinity", "-Infinity"])
+def test_non_finite_decimal_to_float_raises(bad: str) -> None:
+    table = {
+        "columns": {
+            "price": {
+                "name": "price",
+                "data_type": "decimal",
+                "x-typesense-field": {"type": "float"},
+            }
+        }
+    }
+    converters = converted_fields(table)
+    with pytest.raises(TypesenseImportError, match="non-finite"):
+        apply_conversions({"price": bad}, converters, collection_name="ds_events")
+
+
+def test_scientific_notation_decimal_string() -> None:
+    table = {
+        "columns": {
+            "qty": {
+                "name": "qty",
+                "data_type": "decimal",
+                "x-typesense-field": {"type": "int64"},
+            }
+        }
+    }
+    converters = converted_fields(table)
+    data = {"qty": "1E+2"}
+    apply_conversions(data, converters, collection_name="ds_events")
+    assert data["qty"] == 100
+

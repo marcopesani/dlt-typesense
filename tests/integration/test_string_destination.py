@@ -9,7 +9,7 @@ pytestmark = pytest.mark.integration
 
 
 def test_string_destination_resolves_and_loads(
-    require_server, dataset_name, tmp_path, count_documents
+    require_server, dataset_name, tmp_path, documents
 ) -> None:
     # Force credentials via env so the string destination can resolve config.
     import os
@@ -35,7 +35,10 @@ def test_string_destination_resolves_and_loads(
         assert not info.has_failed_jobs
         with pipeline.destination_client() as client:
             collection = client.make_qualified_collection_name("items")  # type: ignore[attr-defined]
-        assert count_documents(collection) == 1
+        docs = documents(collection)
+        assert len(docs) == 1
+        assert docs[0]["sku"] == "A1"
+        assert docs[0]["title"] == "Widget"
     finally:
         try:
             with pipeline.destination_client() as client:

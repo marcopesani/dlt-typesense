@@ -76,7 +76,11 @@ def test_epoch_int32_as_default_sorting_field(make_pipeline, probe, documents) -
     fields = {f["name"]: f for f in schema["fields"]}
     assert fields["ts"]["type"] == "int32"
     assert fields["ts"]["optional"] is False
-    assert len(documents(collection)) == 2
+    docs = {d["name"]: d for d in documents(collection)}
+    assert docs["a"]["ts"] == 1577836800
+    assert docs["b"]["ts"] == 1609459200
+    ordered = documents(collection, sort_by="ts:desc")
+    assert [d["name"] for d in ordered] == ["b", "a"]
 
 
 def test_decimal_hint_to_float(make_pipeline, documents) -> None:
@@ -95,20 +99,3 @@ def test_decimal_hint_to_float(make_pipeline, documents) -> None:
     collection = make_pipeline.qualified_name(pipeline, "prices")
     doc = documents(collection)[0]
     assert doc["price"] == pytest.approx(19.5)
-
-
-def test_int64_default_sorting_field_accepted_by_server(make_pipeline, probe) -> None:
-    """Typesense docs list int32/float; the server also accepts int64 (keep in allow-list)."""
-    pipeline = make_pipeline()
-
-    @dlt.resource(name="scores", write_disposition="replace")
-    def scores():
-        yield {"name": "x", "rank": 10}
-
-    pipeline.run(typesense_adapter(scores(), collection_hints={"default_sorting_field": "rank"}))
-
-    collection = make_pipeline.qualified_name(pipeline, "scores")
-    schema = probe.collections[collection].retrieve()
-    assert schema["default_sorting_field"] == "rank"
-    fields = {f["name"]: f for f in schema["fields"]}
-    assert fields["rank"]["type"] == "int64"

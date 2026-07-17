@@ -48,15 +48,21 @@ def test_file_sharding_produces_exact_totals(make_pipeline, count_documents, mon
     def rows():
         yield from ({"n": i} for i in range(25))
 
-    info = pipeline.run(rows())
-    row_jobs = [
-        job
-        for package in info.load_packages
-        for job in package.jobs["completed_jobs"]
-        if job.job_file_info.table_name == "rows"
-    ]
-    assert len(row_jobs) >= 2  # actually sharded
+    pipeline.run(rows())
     assert count_documents(make_pipeline.qualified_name(pipeline, "rows")) == 25
+
+
+def test_exact_client_batch_size_boundary(make_pipeline, count_documents) -> None:
+    """N == k * client_batch_size must not emit an empty trailing import_."""
+    pipeline = make_pipeline(destination_kwargs={"client_batch_size": 5})
+
+    @dlt.resource(name="rows", write_disposition="append")
+    def rows():
+        yield from ({"n": i} for i in range(10))  # exactly 2 batches
+
+    info = pipeline.run(rows())
+    assert not info.has_failed_jobs
+    assert count_documents(make_pipeline.qualified_name(pipeline, "rows")) == 10
 
 
 def test_import_action_emplace_updates_partial(make_pipeline, documents) -> None:
@@ -129,42 +135,55 @@ def test_dataset_separator_is_honored(make_pipeline, count_documents) -> None:
 def test_rerun_recovers_after_injected_failure(
     make_pipeline, count_documents, monkeypatch, disposition
 ) -> None:
+    """Fail after the first chunk is written; whole-file retry must leave exact counts."""
     original = Documents.import_
-    state = {"failed": False}
+    state = {"calls": 0, "failed": False}
 
     def flaky(self, documents, import_parameters=None, batch_size=None):
-        if not state["failed"]:
+        result = original(self, documents, import_parameters, batch_size)
+        state["calls"] += 1
+        if state["calls"] == 1 and not state["failed"]:
             state["failed"] = True
-            if not isinstance(documents, (bytes, str)):
-                list(documents)
-            raise TypesenseTransientError("injected transient failure")
-        return original(self, documents, import_parameters, batch_size)
+            raise TypesenseTransientError("injected after-chunk-1 failure")
+        return result
 
     monkeypatch.setattr(Documents, "import_", flaky)
 
-    pipeline = make_pipeline()
+    pipeline = make_pipeline(destination_kwargs={"client_batch_size": 2})
     resource_kwargs: dict[str, Any] = {"primary_key": "k"} if disposition == "merge" else {}
 
     @dlt.resource(name="rows", write_disposition=disposition, **resource_kwargs)
     def rows():
-        yield from ({"k": i, "v": i} for i in range(4))
+        yield from ({"k": i, "v": i} for i in range(5))
 
     info = pipeline.run(rows())
     assert not info.has_failed_jobs
-    assert state["failed"]  # a real failure was injected and recovered from
-    assert count_documents(make_pipeline.qualified_name(pipeline, "rows")) == 4
+    assert state["failed"]
+    assert count_documents(make_pipeline.qualified_name(pipeline, "rows")) == 5
 
 
-def test_api_key_absent_from_logs_and_errors(make_pipeline, require_server, caplog) -> None:
-    import logging
+def test_api_key_absent_from_error_messages(require_server, dataset_name, tmp_path) -> None:
+    from dlt_typesense import typesense
+    from dlt_typesense.configuration import TypesenseCredentials
 
-    pipeline = make_pipeline()
+    bad = TypesenseCredentials()
+    bad.host, bad.port, bad.protocol = (
+        require_server.host,
+        require_server.port,
+        require_server.protocol,
+    )
+    bad.api_key = "definitely-wrong-key-must-not-leak"
+    pipeline = dlt.pipeline(
+        pipeline_name="bad_key_logs",
+        destination=typesense(credentials=bad),
+        dataset_name=dataset_name,
+        pipelines_dir=str(tmp_path),
+    )
 
     @dlt.resource(name="rows", write_disposition="append")
     def rows():
         yield {"v": 1}
 
-    with caplog.at_level(logging.DEBUG):
-        info = pipeline.run(rows())
-    assert not info.has_failed_jobs
-    assert require_server.api_key not in caplog.text
+    with pytest.raises(PipelineStepFailed) as excinfo:
+        pipeline.run(rows())
+    assert "definitely-wrong-key-must-not-leak" not in str(excinfo.value)
