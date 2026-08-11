@@ -66,13 +66,15 @@ api_key = "local-dev-key"
 import dlt
 from dlt_typesense import typesense
 
+
 @dlt.resource(name="products", write_disposition="merge", primary_key="sku")
 def products():
     yield {"sku": "A1", "title": "Widget", "price": 9.99}
 
+
 pipeline = dlt.pipeline(
     pipeline_name="shop",
-    destination=typesense(),          # or destination="typesense"
+    destination=typesense(),  # or destination="typesense"
     dataset_name="catalog",
 )
 pipeline.run(products())
@@ -104,12 +106,12 @@ from dlt_typesense import typesense, typesense_adapter
 pipeline.run(
     typesense_adapter(
         products,
-        facet="category",                      # shorthand for {"facet": True}
-        sort=["price", "rating"],              # shorthand for {"sort": True}
+        facet="category",  # shorthand for {"facet": True}
+        sort=["price", "rating"],  # shorthand for {"sort": True}
         field_hints={
             "description": {"locale": "de", "infix": True},
             "last_update": {"type": "int64", "sort": True},  # timestamp → epoch
-            "gltv_eur": {"type": "float", "sort": True},     # decimal → float
+            "gltv_eur": {"type": "float", "sort": True},  # decimal → float
             "embedding": {"type": "float[]", "num_dim": 384},
             "summary_vec": {
                 "type": "float[]",
@@ -151,11 +153,13 @@ dlt's native `add_map` before loading:
 ```python
 import json as pyjson
 
+
 def clean_row(row: dict) -> dict:
     raw = row.get("categories")
     row["categories"] = pyjson.loads(raw) if isinstance(raw, str) else (raw or [])
     row.setdefault("receive_marketing", False)
     return row
+
 
 resource.add_map(clean_row)
 
